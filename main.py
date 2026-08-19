@@ -17,7 +17,6 @@ def run_flask():
     port = int(os.getenv("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# スレッドでFlaskを起動
 threading.Thread(target=run_flask, daemon=True).start()
 
 # --- Botの設定項目 ---
@@ -73,14 +72,22 @@ async def on_message(message):
                     
                     for att in image_attachments:
                         file = await att.to_file()
+                        
+                        # Embed（埋め込み）を作成
+                        embed = discord.Embed(
+                            title="🔗 元の投稿（スレッド）を開く",
+                            url=jump_url,
+                            description=f"📷 **{message.author.display_name}** さんの投稿（#{channel.name} より）",
+                            color=discord.Color.blue()
+                        )
+                        # 画像をEmbed内にきれいにセット
+                        embed.set_image(url=f"attachment://{file.filename}")
+
                         await dest_channel.send(
-                            content=(
-                                f"📷 **{message.author.display_name}** さんの投稿（{channel.name}より）\n"
-                                f"🔗 [👉 元のスレッドを開く]({jump_url})"
-                            ),
+                            embed=embed,
                             file=file
                         )
-                    print(f"[{pair['name']}] 画像と元投稿リンクを転送しました: {message.id}")
+                    print(f"[{pair['name']}] Embed形式で転送しました: {message.id}")
             break
 
 @tasks.loop(hours=12)
