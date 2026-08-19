@@ -111,4 +111,13 @@ async def clean_old_messages():
                 except Exception as e:
                     print(f"[{pair['name']}] 削除エラー: {e}")
 
+# --- エラーハンドリングと自動再接続 ---
+@bot.event
+async def on_disconnect():
+    print("Discordから切断されました。再接続を試みます...")
+
+@bot.event
+async def on_resumed():
+    print("Discordへの再接続が完了しました。")
+
 bot.run(BOT_TOKEN)
