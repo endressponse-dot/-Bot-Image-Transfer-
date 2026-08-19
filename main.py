@@ -6,8 +6,8 @@ from datetime import datetime, timedelta, timezone
 
 # --- 設定項目 ---
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-SOURCE_FORUM_IDS = [1539156107396780132,1539156837469921330,1539223666720509962] # コピー元フォーラムのID（カンマ区切りで複数指定可）
-DEST_CHANNEL_ID = 1539155223925358663 # 転送先(#image-stream)のID
+SOURCE_FORUM_IDS = [1539156107396780132,1539156837469921330,1539223666720509962] # コピー元フォーラムのID（カンマ区切りで複数指定可）　ここを変える
+DEST_CHANNEL_ID = 1539155223925358663 # 転送先(#image-stream)のID　ここを変える
 DELETE_AFTER_DAYS = 7 # 自動削除までの日数
 
 # --- Botの初期化 ---
