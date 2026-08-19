@@ -1,10 +1,26 @@
 import os
+import threading
+from flask import Flask
 import discord
 from discord.ext import tasks, commands
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-# --- 設定項目 ---
+# --- Renderポート開放用のダミーWEBサーバー ---
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run_flask():
+    port = int(os.getenv("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+
+# スレッドでFlaskを起動
+threading.Thread(target=run_flask, daemon=True).start()
+
+# --- Botの設定項目 ---
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DELETE_AFTER_DAYS = 7                   # 自動削除までの日数
 
