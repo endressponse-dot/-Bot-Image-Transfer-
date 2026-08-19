@@ -3,6 +3,23 @@ import discord
 from discord.ext import tasks, commands
 import asyncio
 from datetime import datetime, timedelta, timezone
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
+
+# --- Renderのポート監視（No open ports対策） ---
+class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running!")
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
+    server.serve_forever()
+
+# ダミーWebサーバーを別スレッドで起動
+threading.Thread(target=run_web_server, daemon=True).start()
 
 # --- 設定項目 ---
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
