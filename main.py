@@ -69,7 +69,6 @@ async def on_message(message):
             if image_attachments:
                 dest_channel = bot.get_channel(dest_id)
                 if dest_channel:
-                    # 元メッセージの個別URL（ジャンプリンク）を取得
                     jump_url = message.jump_url
                     
                     for att in image_attachments:
