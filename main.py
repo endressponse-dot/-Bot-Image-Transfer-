@@ -48,7 +48,6 @@ def init_db():
             PRIMARY KEY (guild_id, group_name, channel_id, type)
         )
     ''')
-    # 言語設定用のテーブル追加
     c.execute('''
         CREATE TABLE IF NOT EXISTS guild_languages (
             guild_id INTEGER PRIMARY KEY,
@@ -681,7 +680,6 @@ async def send_language_menu(interaction: discord.Interaction, guild_id: int, lo
     else:
         await interaction.response.send_message(content=msg, view=view, ephemeral=True)
 
-
 # ==========================================
 # 🛠️ UIパーツ（/set_group フロー）
 # ==========================================
@@ -726,6 +724,7 @@ class SetGroupOpView(discord.ui.View):
         msg = f"{map_text}\n\n{get_text(str(self.locale), 'select_del_group')}"
         await interaction.response.edit_message(content=msg, view=view)
 
+
 class GroupSelectForEditView(discord.ui.View):
     def __init__(self, guild_id: int, groups: list, locale: discord.Locale):
         super().__init__(timeout=60)
@@ -733,6 +732,7 @@ class GroupSelectForEditView(discord.ui.View):
         self.locale = locale
 
         options = [discord.SelectOption(label=get_text(str(locale), "new_group_option"), value="__NEW__", emoji="➕")]
+        # Max 25 個の制約に収めるためグループ数は最大 24 個に絞り込み
         options.extend([discord.SelectOption(label=g, value=g, emoji="📁") for g in groups[:24]])
 
         select = discord.ui.Select(placeholder="...", options=options)
@@ -749,6 +749,7 @@ class GroupSelectForEditView(discord.ui.View):
             map_text = build_group_map_text(self.guild_id, self.locale)
             msg = f"{map_text}\n\n{get_text(str(self.locale), 'select_target_type').format(name=selected)}"
             await interaction.response.edit_message(content=msg, view=view)
+
 
 class NewGroupModal(discord.ui.Modal):
     def __init__(self, guild_id: int, locale: discord.Locale):
@@ -793,7 +794,11 @@ class NewGroupModal(discord.ui.Modal):
 
         map_text = build_group_map_text(self.guild_id, self.locale)
         msg = f"{map_text}\n\n{get_text(str(self.locale), 'created_msg').format(name=gname)}"
-        await interaction.response.edit_message(content=msg, view=None)
+        
+        # Modal 応答時は defer して元のメッセージを編集するのが安全
+        await interaction.response.defer()
+        await interaction.message.edit(content=msg, view=None)
+
 
 class AddTypeTargetView(discord.ui.View):
     def __init__(self, guild_id: int, group_name: str, locale: discord.Locale):
@@ -814,6 +819,7 @@ class AddTypeTargetView(discord.ui.View):
     async def dest_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = ChannelAddModal(self.guild_id, self.group_name, "dest", self.locale)
         await interaction.response.send_modal(modal)
+
 
 class ChannelAddModal(discord.ui.Modal):
     def __init__(self, guild_id: int, group_name: str, channel_type: str, locale: discord.Locale):
@@ -845,13 +851,17 @@ class ChannelAddModal(discord.ui.Modal):
         conn.commit()
         conn.close()
 
-        chan = bot.get_channel(cid)
+        chan = interaction.client.get_channel(cid)
         c_mention = chan.mention if chan else f"ID:{cid}"
         t_label = get_text(str(self.locale), "source" if self.channel_type == "source" else "dest")
 
         map_text = build_group_map_text(self.guild_id, self.locale)
         msg = f"{map_text}\n\n{get_text(str(self.locale), 'added_msg').format(name=self.group_name, type=t_label, channel=c_mention)}"
-        await interaction.response.edit_message(content=msg, view=None)
+        
+        # Modal 応答時は defer して元のメッセージを編集
+        await interaction.response.defer()
+        await interaction.message.edit(content=msg, view=None)
+
 
 class GroupSelectForDeleteView(discord.ui.View):
     def __init__(self, guild_id: int, groups: list, locale: discord.Locale):
@@ -859,7 +869,8 @@ class GroupSelectForDeleteView(discord.ui.View):
         self.guild_id = guild_id
         self.locale = locale
 
-        options = [discord.SelectOption(label=g, value=g, emoji="💥") for g in groups]
+        # 最大 25 個の制限を適用
+        options = [discord.SelectOption(label=g, value=g, emoji="💥") for g in groups[:25]]
         select = discord.ui.Select(placeholder="...", options=options)
         select.callback = self.select_callback
         self.add_item(select)
