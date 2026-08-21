@@ -6,7 +6,6 @@ def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     
-    # 転送グループテーブル
     c.execute('''
         CREATE TABLE IF NOT EXISTS group_channels (
             guild_id INTEGER,
@@ -16,7 +15,6 @@ def init_db():
         )
     ''')
     
-    # グループ設定（メモ・保持日数）テーブル
     c.execute('''
         CREATE TABLE IF NOT EXISTS group_settings (
             guild_id INTEGER,
@@ -27,7 +25,6 @@ def init_db():
         )
     ''')
     
-    # サーバー言語設定テーブル
     c.execute('''
         CREATE TABLE IF NOT EXISTS guild_languages (
             guild_id INTEGER PRIMARY KEY,
