@@ -1,11 +1,11 @@
 import sqlite3
 from config import DB_FILE, DEFAULT_DELETE_AFTER_DAYS
-from locales import get_text
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     
+    # 転送グループのチャンネルマッピング
     c.execute('''
         CREATE TABLE IF NOT EXISTS group_channels (
             guild_id INTEGER,
@@ -15,6 +15,7 @@ def init_db():
         )
     ''')
     
+    # グループごとの個別設定（説明文・保持日数）
     c.execute('''
         CREATE TABLE IF NOT EXISTS group_settings (
             guild_id INTEGER,
@@ -25,6 +26,7 @@ def init_db():
         )
     ''')
     
+    # サーバーごとの言語設定
     c.execute('''
         CREATE TABLE IF NOT EXISTS guild_languages (
             guild_id INTEGER PRIMARY KEY,
@@ -38,6 +40,7 @@ def init_db():
 def build_group_map_text(guild_id: int, locale, bot) -> str:
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+    
     c.execute('SELECT group_name, channel_id, type FROM group_channels WHERE guild_id = ?', (guild_id,))
     rows = c.fetchall()
     
@@ -45,7 +48,13 @@ def build_group_map_text(guild_id: int, locale, bot) -> str:
     settings_rows = c.fetchall()
     conn.close()
 
-    settings_map = {r[0]: {"desc": r[1], "days": r[2] if r[2] is not None else DEFAULT_DELETE_AFTER_DAYS} for r in settings_rows}
+    settings_map = {
+        r[0]: {
+            "desc": r[1] if r[1] else "",
+            "days": r[2] if r[2] is not None else DEFAULT_DELETE_AFTER_DAYS
+        }
+        for r in settings_rows
+    }
 
     groups = {}
     for g_name, ch_id, ch_type in rows:
