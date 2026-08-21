@@ -13,9 +13,10 @@ from database import (
 # ==========================================
 
 class RetentionSelect(discord.ui.Select):
-    def __init__(self, group_name: str, guild_id: int):
+    def __init__(self, group_name: str, guild_id: int, locale):
         self.group_name = group_name
         self.guild_id = guild_id
+        self.locale = locale
         
         options = [
             discord.SelectOption(label="1日", value="1", description="1日後にメッセージを自動削除"),
@@ -31,10 +32,15 @@ class RetentionSelect(discord.ui.Select):
         days = int(self.values[0])
         set_group_retention_days(self.guild_id, self.group_name, days)
         days_str = f"{days}日間" if days > 0 else "無制限"
-        await interaction.response.send_message(
-            f"✅ グループ **{self.group_name}** の保持期間を **{days_str}** に設定しました。",
-            ephemeral=True
-        )
+        
+        # メッセージを編集してボタン類を削除し、最新の設定一覧を表示
+        updated_text = build_group_map_text(self.guild_id, self.locale, interaction.client)
+        msg_content = f"✅ グループ **{self.group_name}** の保持期間を **{days_str}** に設定しました。\n\n{updated_text}"
+        
+        await interaction.response.edit_message(content=msg_content, view=None)
+        
+        # 5秒後に自動でメッセージを消去
+        await interaction.delete_original_response(delay=5)
 
 
 class GroupChannelSelectView(discord.ui.View):
@@ -62,10 +68,9 @@ class GroupChannelSelectView(discord.ui.View):
         self.add_item(channel_select)
 
     async def channel_select_callback(self, interaction: discord.Interaction):
-        # 安全に選択された値を取得
         values = interaction.data.get('values', [])
         if not values:
-            await interaction.response.send_message("❌ チャンネルの取得に失敗しました。", ephemeral=True)
+            await interaction.response.send_message("❌ チャンネルの取得に失敗しました。", ephemeral=True, delete_after=5)
             return
 
         selected_channel_id = values[0]
@@ -74,10 +79,14 @@ class GroupChannelSelectView(discord.ui.View):
         add_group_channel(self.guild_id, self.group_name, int(selected_channel_id), ch_type)
         
         type_str = "転送元 (Source)" if ch_type == "src" else "転送先 (Dest)"
-        await interaction.response.send_message(
-            f"✅ グループ **{self.group_name}** の **{type_str}** に <#{selected_channel_id}> を追加しました。",
-            ephemeral=True
-        )
+        updated_text = build_group_map_text(self.guild_id, self.locale, interaction.client)
+        msg_content = f"✅ グループ **{self.group_name}** の **{type_str}** に <#{selected_channel_id}> を追加しました。\n\n{updated_text}"
+        
+        # 選択完了時にメニューを削除して更新内容を表示
+        await interaction.response.edit_message(content=msg_content, view=None)
+        
+        # 5秒後に自動削除
+        await interaction.delete_original_response(delay=5)
 
 
 # ==========================================
@@ -92,7 +101,7 @@ class GroupActionView(discord.ui.View):
         self.locale = locale
 
         # 保持期間選択ドロップダウンを追加
-        self.add_item(RetentionSelect(group_name, guild_id))
+        self.add_item(RetentionSelect(group_name, guild_id, locale))
 
     @discord.ui.button(label="📥 転送元を追加", style=discord.ButtonStyle.primary, row=1)
     async def add_source(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -107,7 +116,12 @@ class GroupActionView(discord.ui.View):
     @discord.ui.button(label="🗑️ このグループを削除", style=discord.ButtonStyle.danger, row=1)
     async def delete_group(self, interaction: discord.Interaction, button: discord.ui.Button):
         delete_group_channel(self.guild_id, self.group_name)
-        await interaction.response.send_message(f"🗑️ グループ **{self.group_name}** を削除しました。", ephemeral=True)
+        
+        updated_text = build_group_map_text(self.guild_id, self.locale, interaction.client)
+        msg_content = f"🗑️ グループ **{self.group_name}** を削除しました。\n\n{updated_text}"
+        
+        await interaction.response.edit_message(content=msg_content, view=None)
+        await interaction.delete_original_response(delay=5)
 
 
 # ==========================================
@@ -152,12 +166,14 @@ class GroupSelectMenu(discord.ui.Select):
         if selected_val == "__new__":
             modal = NewGroupModal(self.guild_id, self.locale)
             await interaction.response.send_modal(modal)
+            # 元の選択メニューを無効化
+            await interaction.message.edit(view=None)
         else:
             view = GroupActionView(self.guild_id, selected_val, self.locale)
-            await interaction.response.send_message(
-                f"⚙️ グループ **{selected_val}** の設定・編集を行います。操作を選択してください:",
-                view=view,
-                ephemeral=True
+            # 前のグループ選択メニューを消して編集Viewを開く
+            await interaction.response.edit_message(
+                content=f"⚙️ グループ **{selected_val}** の設定・編集を行います。操作を選択してください:",
+                view=view
             )
 
 
@@ -172,7 +188,12 @@ class GroupDeleteSelectMenu(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         selected_val = self.values[0]
         delete_group_channel(self.guild_id, selected_val)
-        await interaction.response.send_message(f"🗑️ グループ **{selected_val}** を削除しました。", ephemeral=True)
+        
+        updated_text = build_group_map_text(self.guild_id, self.locale, interaction.client)
+        msg_content = f"🗑️ グループ **{selected_val}** を削除しました。\n\n{updated_text}"
+        
+        await interaction.response.edit_message(content=msg_content, view=None)
+        await interaction.delete_original_response(delay=5)
 
 
 # ==========================================
@@ -189,7 +210,8 @@ class OperationSelectView(discord.ui.View):
     @discord.ui.button(label="📋 設定一覧を表示", style=discord.ButtonStyle.secondary, row=0)
     async def show_list(self, interaction: discord.Interaction, button: discord.ui.Button):
         text = build_group_map_text(self.guild_id, self.locale, self.bot)
-        await interaction.response.send_message(text, ephemeral=True)
+        # 設定一覧メッセージも5秒で自動消去
+        await interaction.response.send_message(text, ephemeral=True, delete_after=5)
 
     @discord.ui.button(label="⚙️ グループ編集・追加", style=discord.ButtonStyle.primary, row=0)
     async def edit_group(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -206,7 +228,7 @@ class OperationSelectView(discord.ui.View):
         existing_groups = get_all_group_names(self.guild_id)
         
         if not existing_groups:
-            await interaction.response.send_message("❌ 削除できるグループが存在しません。", ephemeral=True)
+            await interaction.response.send_message("❌ 削除できるグループが存在しません。", ephemeral=True, delete_after=5)
             return
 
         view = discord.ui.View()
