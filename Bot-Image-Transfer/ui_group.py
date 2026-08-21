@@ -48,8 +48,15 @@ class GroupChannelSelectView(discord.ui.View):
         self.locale = locale
 
         channel_select = discord.ui.ChannelSelect(
-            placeholder="対象のチャンネルを選択してください...",
-            channel_types=[discord.ChannelType.text, discord.ChannelType.news],
+            placeholder="対象のチャンネルまたはスレッドを選択...",
+            channel_types=[
+                discord.ChannelType.text,           # テキストチャンネル
+                discord.ChannelType.forum,          # フォーラムチャンネル
+                discord.ChannelType.public_thread,   # 公開スレッド
+                discord.ChannelType.private_thread,  # 非公開スレッド
+                discord.ChannelType.news,            # アナウンスチャンネル
+                discord.ChannelType.news_thread      # アナウンススレッド
+            ],
             min_values=1,
             max_values=1
         )
@@ -86,12 +93,12 @@ class GroupActionView(discord.ui.View):
     @discord.ui.button(label="📥 転送元を追加", style=discord.ButtonStyle.primary, row=1)
     async def add_source(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = GroupChannelSelectView(self.guild_id, self.group_name, "add_src", self.locale)
-        await interaction.response.send_message("📥 転送元に指定するチャンネルを選択してください:", view=view, ephemeral=True)
+        await interaction.response.send_message("📥 転送元に指定するチャンネルまたはスレッドを選択してください:", view=view, ephemeral=True)
 
     @discord.ui.button(label="📤 転送先を追加", style=discord.ButtonStyle.success, row=1)
     async def add_dest(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = GroupChannelSelectView(self.guild_id, self.group_name, "add_dest", self.locale)
-        await interaction.response.send_message("📤 転送先に指定するチャンネルを選択してください:", view=view, ephemeral=True)
+        await interaction.response.send_message("📤 転送先に指定するチャンネルまたはスレッドを選択してください:", view=view, ephemeral=True)
 
     @discord.ui.button(label="🗑️ このグループを削除", style=discord.ButtonStyle.danger, row=1)
     async def delete_group(self, interaction: discord.Interaction, button: discord.ui.Button):
