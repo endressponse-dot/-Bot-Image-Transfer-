@@ -306,13 +306,13 @@ async def send_language_menu(interaction: discord.Interaction, guild_id: int, lo
 
 class SetGroupOpView(discord.ui.View):
     def __init__(self, guild_id: int, locale: discord.Locale):
-        super().__init__(timeout=180) # 連続操作を考慮してタイムアウトを3分に延長
+        super().__init__(timeout=180)
         self.guild_id = guild_id
         self.locale = locale
 
         self.add_btn.label = get_text(str(locale), "btn_add")
         self.del_btn.label = get_text(str(locale), "btn_del")
-        self.close_btn.label = "メニューを閉じる" # 終了用ボタン
+        self.close_btn.label = "メニューを閉じる"
 
     @discord.ui.button(style=discord.ButtonStyle.primary, emoji="✏️", custom_id="add_btn", row=0)
     async def add_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -368,7 +368,6 @@ class GroupSelectForEditView(discord.ui.View):
         if selected == "__NEW__":
             modal = NewGroupModal(self.guild_id, self.locale)
             await interaction.response.send_modal(modal)
-            # モダンのポップアップ後に元のメッセージをメインメニューに戻す
             map_text = build_group_map_text(self.guild_id, self.locale)
             view = SetGroupOpView(self.guild_id, self.locale)
             await interaction.message.edit(content=f"{map_text}\n\n{get_text(str(self.locale), 'menu_prompt')}", view=view)
@@ -443,7 +442,6 @@ class NewGroupChannelSelectView(discord.ui.View):
         conn.commit()
         conn.close()
 
-        # 保存完了後、メインメニューと最新マップを再描画して継続操作できるようにする
         map_text = build_group_map_text(self.guild_id, self.locale)
         success_msg = get_text(str(self.locale), 'created_msg').format(name=self.group_name)
         new_view = SetGroupOpView(self.guild_id, self.locale)
@@ -501,7 +499,6 @@ class ChannelAddSelectView(discord.ui.View):
         c_mention = chan.mention if chan else f"ID:{cid}"
         t_label = get_text(str(self.locale), "source" if self.channel_type == "source" else "dest")
 
-        # 追加完了後、メインメニューと最新マップに戻して継続操作できるようにする
         map_text = build_group_map_text(self.guild_id, self.locale)
         success_msg = get_text(str(self.locale), 'added_msg').format(name=self.group_name, type=t_label, channel=c_mention)
         new_view = SetGroupOpView(self.guild_id, self.locale)
@@ -528,7 +525,6 @@ class GroupSelectForDeleteView(discord.ui.View):
         conn.commit()
         conn.close()
 
-        # 削除完了後、メインメニューと最新マップに戻して継続操作できるようにする
         map_text = build_group_map_text(self.guild_id, self.locale)
         success_msg = get_text(str(self.locale), 'group_deleted').format(name=group_name)
         new_view = SetGroupOpView(self.guild_id, self.locale)
@@ -585,7 +581,7 @@ class ResetConfirmView(discord.ui.View):
         await interaction.response.edit_message(content=msg, view=None)
 
 # ==========================================
-# 🔄 転送処理 ＆ 自動削除
+# 🔄 転送処理 ＆ 自動削除（リッチデザイン＆ハイライト対応）
 # ==========================================
 
 @bot.event
@@ -623,25 +619,21 @@ async def on_message(message):
         server_locale_str = str(message.guild.preferred_locale)
         actual_main = main_lang_code if main_lang_code != "default" else server_locale_str.split('-')[0].lower()
         
-        title_text = get_text(actual_main, "embed_title")
+        # 🔗 特殊絵文字付きのきれいなタイトルに修正
+        title_text = f"🔗 {get_text(actual_main, 'embed_title')}"
         jump_url = message.jump_url
         
         desc_lines = []
-        main_desc = get_text(actual_main, "embed_desc").format(
-            author=message.author.display_name,
-            channel=channel.name
-        )
+        # 太字や絵文字を使った見やすいフォーマットに修正
+        main_desc = f"👤 **{message.author.display_name}** さんの投稿（#{channel.name} より）"
         desc_lines.append(main_desc)
         
         if sub_langs_str:
             sub_langs = sub_langs_str.split(',')
             for sl in sub_langs:
                 if sl and sl != "none":
-                    sl_desc = get_text(sl, "embed_desc").format(
-                        author=message.author.display_name,
-                        channel=channel.name
-                    )
-                    desc_lines.append(sl_desc)
+                    sub_desc = f"👤 **{message.author.display_name}** さんの投稿（#{channel.name} より）"
+                    desc_lines.append(sub_desc)
 
         final_desc = "\n\n".join(desc_lines)
 
