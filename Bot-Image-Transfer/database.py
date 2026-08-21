@@ -26,7 +26,7 @@ def init_db():
         )
     ''')
     
-    # サーバーごとの言語設定
+    # サーバーごとの言語設定 (メイン言語 + カンマ区切りのサブ言語リスト)
     c.execute('''
         CREATE TABLE IF NOT EXISTS guild_languages (
             guild_id INTEGER PRIMARY KEY,
@@ -46,7 +46,14 @@ def build_group_map_text(guild_id: int, locale, bot) -> str:
     
     c.execute('SELECT group_name, description, retention_days FROM group_settings WHERE guild_id = ?', (guild_id,))
     settings_rows = c.fetchall()
+
+    # サーバー言語設定の取得
+    c.execute('SELECT main_lang, sub_langs FROM guild_languages WHERE guild_id = ?', (guild_id,))
+    lang_row = c.fetchone()
     conn.close()
+
+    main_lang = lang_row[0] if lang_row and lang_row[0] else "ja"
+    sub_langs = lang_row[1] if lang_row and lang_row[1] else "なし"
 
     settings_map = {
         r[0]: {
@@ -62,10 +69,13 @@ def build_group_map_text(guild_id: int, locale, bot) -> str:
             groups[g_name] = {"src": [], "dest": []}
         groups[g_name][ch_type].append(ch_id)
 
-    if not groups:
-        return "📋 **現在の転送設定**: なし"
+    lines = [f"🌐 **サーバー言語設定**: メイン: `{main_lang}` / サブ: `{sub_langs}`\n"]
 
-    lines = ["📋 **現在のグループ設定一覧**:"]
+    if not groups:
+        lines.append("📋 **現在の転送設定**: なし")
+        return "\n".join(lines)
+
+    lines.append("📋 **現在のグループ設定一覧**:")
     for g_name, data in groups.items():
         desc = settings_map.get(g_name, {}).get("desc", "")
         days = settings_map.get(g_name, {}).get("days", DEFAULT_DELETE_AFTER_DAYS)
@@ -130,12 +140,41 @@ def get_group_retention_days(guild_id: int, group_name: str) -> int:
         return row[0]
     return DEFAULT_DELETE_AFTER_DAYS
 
+# ==========================================
+# 言語設定（メイン言語・複数サブ言語）追加関数
+# ==========================================
+
+def set_guild_languages(guild_id: int, main_lang: str, sub_langs: list):
+    """
+    サーバーのメイン言語とサブ言語のリストをDBに保存します。
+    sub_langs は ['en', 'zh-cn'] のようなリストで受け取り、カンマ区切り文字列として保存します。
+    """
+    sub_langs_str = ",".join(sub_langs) if sub_langs else ""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO guild_languages (guild_id, main_lang, sub_langs)
+        VALUES (?, ?, ?)
+        ON CONFLICT(guild_id) DO UPDATE SET 
+            main_lang = excluded.main_lang,
+            sub_langs = excluded.sub_langs
+    ''', (guild_id, main_lang, sub_langs_str))
+    conn.commit()
+    conn.close()
+
 def get_guild_language_setting(guild_id: int):
+    """
+    サーバーの言語設定を取得します。
+    返り値: (メイン言語str, サブ言語のリストlist) 例: ("ja", ["en", "zh-cn"])
+    """
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('SELECT main_lang, sub_langs FROM guild_languages WHERE guild_id = ?', (guild_id,))
     row = c.fetchone()
     conn.close()
+    
     if row:
-        return row[0], row[1]
-    return "default", ""
+        main_lang = row[0] if row[0] else "ja"
+        sub_langs = [s.strip() for s in row[1].split(",") if s.strip()] if row[1] else []
+        return main_lang, sub_langs
+    return "ja", []
