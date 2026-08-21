@@ -13,7 +13,9 @@ from ui_language import send_language_menu
 from ui_group import SetGroupOpView
 from ui_reset import ResetConfirmView
 
+# Web サーバー（Render用ポート開放）の読み込みと即時起動
 from keep_alive import keep_alive
+keep_alive()
 
 # Botの準備
 intents = discord.Intents.default()
@@ -166,5 +168,4 @@ async def clean_old_messages():
                     print(f"削除エラー: {e}")
 
 if __name__ == "__main__":
-    keep_alive()
     bot.run(BOT_TOKEN)
