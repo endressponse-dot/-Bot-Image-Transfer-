@@ -581,7 +581,7 @@ class ResetConfirmView(discord.ui.View):
         await interaction.response.edit_message(content=msg, view=None)
 
 # ==========================================
-# 🔄 転送処理 ＆ 自動削除（リッチデザイン＆ハイライト対応）
+# 🔄 転送処理 ＆ 自動削除（多言語 langmap・絵文字対応）
 # ==========================================
 
 @bot.event
@@ -619,20 +619,27 @@ async def on_message(message):
         server_locale_str = str(message.guild.preferred_locale)
         actual_main = main_lang_code if main_lang_code != "default" else server_locale_str.split('-')[0].lower()
         
-        # 🔗 特殊絵文字付きのきれいなタイトルに修正
+        # 🔗 特殊絵文字付きのタイトル
         title_text = f"🔗 {get_text(actual_main, 'embed_title')}"
         jump_url = message.jump_url
         
         desc_lines = []
-        # 太字や絵文字を使った見やすいフォーマットに修正
-        main_desc = f"👤 **{message.author.display_name}** さんの投稿（#{channel.name} より）"
+        # メイン言語の設定に基づく説明文を取得して追加
+        main_desc = get_text(actual_main, "embed_desc").format(
+            author=message.author.display_name,
+            channel=channel.name
+        )
         desc_lines.append(main_desc)
         
+        # サブ言語（langmap）の設定がある場合、それぞれの言語で説明文を追加
         if sub_langs_str:
             sub_langs = sub_langs_str.split(',')
             for sl in sub_langs:
                 if sl and sl != "none":
-                    sub_desc = f"👤 **{message.author.display_name}** さんの投稿（#{channel.name} より）"
+                    sub_desc = get_text(sl, "embed_desc").format(
+                        author=message.author.display_name,
+                        channel=channel.name
+                    )
                     desc_lines.append(sub_desc)
 
         final_desc = "\n\n".join(desc_lines)
