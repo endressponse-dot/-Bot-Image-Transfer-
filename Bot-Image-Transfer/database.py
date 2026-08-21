@@ -1,7 +1,6 @@
 import sqlite3
 import discord
 from config import DB_FILE, DEFAULT_DELETE_AFTER_DAYS
-from locales import get_text
 
 # ==========================================
 # 1. データベース初期化
@@ -83,10 +82,10 @@ def build_group_map_text(guild_id: int, locale, bot) -> str:
     lines = [f"🌐 **サーバー言語設定**: メイン: `{main_lang}` / サブ: `{sub_langs}`\n"]
 
     if not groups:
-        lines.append(f"📋 **{get_text(locale, 'group_settings_title')}**: {get_text(locale, 'no_groups_configured')}")
+        lines.append("📋 **転送グループ設定一覧**: 設定されているグループはありません。")
         return "\n".join(lines)
 
-    lines.append(f"📋 **{get_text(locale, 'group_settings_title')}**:")
+    lines.append("📋 **転送グループ設定一覧**:")
     for g_name, data in groups.items():
         desc = settings_map.get(g_name, {}).get("desc", "")
         days = settings_map.get(g_name, {}).get("days", DEFAULT_DELETE_AFTER_DAYS)
@@ -98,15 +97,18 @@ def build_group_map_text(guild_id: int, locale, bot) -> str:
         src_names = [f"<#{cid}>" for cid in data["src"]]
         dest_names = [f"<#{cid}>" for cid in data["dest"]]
         
-        lines.append(f"  ├ 転送元 (Source): {', '.join(src_names) if src_names else '未設定'}")
-        lines.append(f"  └ 転送先 (Dest): {', '.join(dest_names) if dest_names else '未設定'}")
+        src_str = ', '.join(src_names) if src_names else '未設定'
+        dest_str = ', '.join(dest_names) if dest_names else '未設定'
+        
+        lines.append(f"  ├ 転送元 (Source): {src_str}")
+        lines.append(f"  └ 転送先 (Dest): {dest_str}")
 
     return "\n".join(lines)
 
 
 def get_all_group_names(guild_id: int) -> list[str]:
     """
-    ui_group.py のドロップダウンメニュー構築用に追加された関数。
+    ui_group.py のドロップダウンメニュー構築用。
     group_channels および group_settings から重複しないグループ名一覧を取得します。
     """
     conn = sqlite3.connect(DB_FILE)
@@ -188,7 +190,6 @@ def get_group_retention_days(guild_id: int, group_name: str) -> int:
 def set_guild_languages(guild_id: int, main_lang: str, sub_langs: list):
     """
     サーバーのメイン言語とサブ言語のリストをDBに保存します。
-    sub_langs は ['en', 'zh-cn'] のようなリストで受け取り、カンマ区切り文字列として保存します。
     """
     sub_langs_str = ",".join(sub_langs) if sub_langs else ""
     conn = sqlite3.connect(DB_FILE)
