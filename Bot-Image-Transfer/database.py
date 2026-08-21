@@ -1,5 +1,10 @@
 import sqlite3
+import discord
 from config import DB_FILE, DEFAULT_DELETE_AFTER_DAYS
+
+# ==========================================
+# 1. データベース初期化
+# ==========================================
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -36,6 +41,11 @@ def init_db():
     ''')
     conn.commit()
     conn.close()
+
+
+# ==========================================
+# 2. 設定テキスト構築・一覧取得関数
+# ==========================================
 
 def build_group_map_text(guild_id: int, locale, bot) -> str:
     conn = sqlite3.connect(DB_FILE)
@@ -92,6 +102,30 @@ def build_group_map_text(guild_id: int, locale, bot) -> str:
 
     return "\n".join(lines)
 
+
+def get_all_group_names(guild_id: int) -> list[str]:
+    """
+    ui_group.py のドロップダウンメニュー構築用に追加された関数。
+    group_channels および group_settings から重複しないグループ名一覧を取得します。
+    """
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
+        SELECT DISTINCT group_name FROM (
+            SELECT group_name FROM group_channels WHERE guild_id = ?
+            UNION
+            SELECT group_name FROM group_settings WHERE guild_id = ?
+        )
+    ''', (guild_id, guild_id))
+    rows = c.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+
+# ==========================================
+# 3. チャンネル・グループ追加・削除
+# ==========================================
+
 def add_group_channel(guild_id: int, group_name: str, channel_id: int, ch_type: str):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -107,6 +141,11 @@ def delete_group_channel(guild_id: int, group_name: str):
     c.execute('DELETE FROM group_settings WHERE guild_id = ? AND group_name = ?', (guild_id, group_name))
     conn.commit()
     conn.close()
+
+
+# ==========================================
+# 4. グループ個別設定（説明文・保持期間）
+# ==========================================
 
 def set_group_description(guild_id: int, group_name: str, description: str):
     conn = sqlite3.connect(DB_FILE)
@@ -140,8 +179,9 @@ def get_group_retention_days(guild_id: int, group_name: str) -> int:
         return row[0]
     return DEFAULT_DELETE_AFTER_DAYS
 
+
 # ==========================================
-# 言語設定（メイン言語・複数サブ言語）追加関数
+# 5. 言語設定（メイン言語・複数サブ言語）追加関数
 # ==========================================
 
 def set_guild_languages(guild_id: int, main_lang: str, sub_langs: list):
