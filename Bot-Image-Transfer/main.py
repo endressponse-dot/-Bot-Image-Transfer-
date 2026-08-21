@@ -6,14 +6,17 @@ import discord
 from discord.ext import commands, tasks
 
 from config import DISCORD_BOT_TOKEN, DB_FILE, DEFAULT_DELETE_AFTER_DAYS
-from locales import get_text
 from database import init_db, get_guild_language_setting, build_group_map_text
 from ui_language import send_language_menu
 from ui_group import send_group_management_menu
 from keep_alive import keep_alive
 
+# 権限(Intents)の設定：スレッド・メッセージコンテンツ読み取りを確実に許可
 intents = discord.Intents.default()
 intents.message_content = True
+intents.guilds = True
+intents.messages = True
+
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ---------------------------------------------------------
@@ -29,27 +32,66 @@ async def on_ready():
     except Exception as e:
         print(f"Failed to sync commands: {e}")
     
-    clean_old_messages.start()
+    if not clean_old_messages.is_running():
+        clean_old_messages.start()
 
 # ---------------------------------------------------------
-# 1. 転送メッセージ処理（Embedデザイン構築の更新）
+# 画像抽出ユーティリティ関数
+# ---------------------------------------------------------
+def extract_image_urls(message: discord.Message) -> list[str]:
+    """
+    メッセージの添付ファイルおよび埋め込み(Embed)から画像URLをすべて抽出します。
+    """
+    urls = []
+    # 添付ファイルのチェック
+    if message.attachments:
+        for att in message.attachments:
+            if att.content_type and att.content_type.startswith("image/"):
+                urls.append(att.url)
+            elif att.url.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
+                urls.append(att.url)
+
+    # 埋め込み(Embed)画像のチェック
+    if message.embeds:
+        for embed in message.embeds:
+            if embed.image and embed.image.url:
+                urls.append(embed.image.url)
+            elif embed.thumbnail and embed.thumbnail.url:
+                urls.append(embed.thumbnail.url)
+
+    return urls
+
+# ---------------------------------------------------------
+# 1. 転送メッセージ処理（通常チャンネル & フォーラム・スレッド対応）
 # ---------------------------------------------------------
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
 
-    # 画像アタッチメントがなければスキップ
-    if not message.attachments:
+    # フォーラム内のスレッド投稿か、通常のテキストチャンネルかを判定
+    # スレッドの場合は親チャンネル(フォーラム)のIDを取得
+    if isinstance(message.channel, discord.Thread):
+        target_channel_id = message.channel.parent_id
+        is_thread = True
+    else:
+        target_channel_id = message.channel.id
+        is_thread = False
+
+    # メッセージ（またはスレッドのスターターメッセージ）から画像URLを抽出
+    image_urls = extract_image_urls(message)
+
+    # 画像が含まれていない場合は処理を行わない
+    if not image_urls:
         await bot.process_commands(message)
         return
 
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     
-    # 送信チャンネルがどのグループの転送元(src)か取得
+    # 該当チャンネル（またはフォーラム親チャンネル）が転送元(src)か取得
     c.execute('SELECT group_name FROM group_channels WHERE guild_id = ? AND channel_id = ? AND type = "src"',
-              (message.guild.id, message.channel.id))
+              (message.guild.id, target_channel_id))
     src_rows = c.fetchall()
     
     if not src_rows:
@@ -57,19 +99,7 @@ async def on_message(message: discord.Message):
         await bot.process_commands(message)
         return
 
-    main_lang, _ = get_guild_language_setting(message.guild.id)
-    actual_lang = message.guild.preferred_locale if main_lang == "default" else main_lang
-
-    embed_title = get_text(actual_lang, "embed_title")
-    embed_desc_template = get_text(actual_lang, "embed_desc")
-    
-    # 📌 マークダウンリンク付きタイトル・太字＆絵文字つきコンパクトDescriptionの作成
-    title_text = f"[{embed_title}]({message.jump_url})"
-    formatted_desc = embed_desc_template.format(
-        author=message.author.mention,
-        channel=message.channel.name
-    )
-
+    # 転送先(dest)へメッセージを構築して送信
     for row in src_rows:
         group_name = row[0]
         c.execute('SELECT channel_id FROM group_channels WHERE guild_id = ? AND group_name = ? AND type = "dest"',
@@ -79,22 +109,25 @@ async def on_message(message: discord.Message):
         for d_row in dest_rows:
             dest_ch = message.guild.get_channel(d_row[0])
             if dest_ch:
+                channel_display_name = f"{message.channel.parent.name} > {message.channel.name}" if is_thread else message.channel.name
+                
                 embed = discord.Embed(
                     title="",
-                    description=f"### {title_text}\n{formatted_desc}",
+                    description=f"### [📷 画像が共有されました]({message.jump_url})\n👤 投稿者: {message.author.mention} | 📍 チャンネル: **#{channel_display_name}**",
                     color=discord.Color.blue()
                 )
+                
                 if message.content:
-                    embed.add_field(name="💬 Message", value=message.content, inline=False)
+                    embed.add_field(name="💬 メッセージ", value=message.content, inline=False)
                 
                 # 最初のアタッチメント画像をメインに設定
-                embed.set_image(url=message.attachments[0].url)
+                embed.set_image(url=image_urls[0])
                 await dest_ch.send(embed=embed)
                 
                 # 複数画像がある場合は追加で送信
-                for att in message.attachments[1:]:
+                for extra_url in image_urls[1:]:
                     img_embed = discord.Embed(color=discord.Color.blue())
-                    img_embed.set_image(url=att.url)
+                    img_embed.set_image(url=extra_url)
                     await dest_ch.send(embed=img_embed)
 
     conn.close()
@@ -124,7 +157,9 @@ async def list_command(interaction: discord.Interaction):
     text = build_group_map_text(interaction.guild_id, interaction.locale, bot)
     await interaction.response.send_message(text, ephemeral=True)
 
-# 3. チャンネル全削除機能 (/clear_channel)
+# ---------------------------------------------------------
+# 3. チャンネル全削除機能 (/clear_channel) - 連打防止対応
+# ---------------------------------------------------------
 class ClearConfirmView(discord.ui.View):
     def __init__(self, locale):
         super().__init__(timeout=60)
@@ -132,13 +167,18 @@ class ClearConfirmView(discord.ui.View):
 
     @discord.ui.button(label="🗑️ 実行する", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        channel = interaction.channel
+        # ボタン連打防止：直ちにUI（ボタン）を無効化してメッセージを編集更新
+        await interaction.response.edit_message(
+            content="⏳ メッセージ削除処理を実行中です...", 
+            view=None
+        )
         
+        channel = interaction.channel
         now = datetime.now(timezone.utc)
         fourteen_days_ago = now - timedelta(days=14)
         
         deleted_count = 0
+        
         # 14日以内のメッセージは一括削除(purge)
         try:
             purged = await channel.purge(limit=1000, after=fourteen_days_ago)
@@ -147,13 +187,16 @@ class ClearConfirmView(discord.ui.View):
             print(f"Purge error: {e}")
 
         # 14日以上経過した古いメッセージは個別に削除
-        async for msg in channel.history(limit=1000, before=fourteen_days_ago):
-            try:
-                await msg.delete()
-                deleted_count += 1
-                await asyncio.sleep(1.0)  # レートリミット回避のウェイト
-            except Exception:
-                pass
+        try:
+            async for msg in channel.history(limit=1000, before=fourteen_days_ago):
+                try:
+                    await msg.delete()
+                    deleted_count += 1
+                    await asyncio.sleep(0.8)  # レートリミット回避のウェイト
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"History purge error: {e}")
                 
         await interaction.followup.send(f"🧹 チャンネル内のメッセージを削除しました（計 {deleted_count} 通）。", ephemeral=True)
 
@@ -163,7 +206,7 @@ async def clear_channel_command(interaction: discord.Interaction):
         await interaction.response.send_message("❌ このコマンドは管理者専用です。", ephemeral=True)
         return
     
-    warn_text = get_text(interaction.locale, "clear_confirm")
+    warn_text = "⚠️ **警告**: このチャンネルの過去メッセージを削除します。よろしいですか？"
     view = ClearConfirmView(interaction.locale)
     await interaction.response.send_message(warn_text, view=view, ephemeral=True)
 
