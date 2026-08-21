@@ -1,10 +1,10 @@
 import os
 
-# Discord Bot Token（環境変数から取得、無ければ直接記述のフォールバック）
-BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+# 環境変数からトークンを取得（なければ空文字）
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
 
-# データベースファイル名
-DB_FILE = "bot_config.db"
+# データベースファイルパス
+DB_FILE = os.getenv("DB_FILE", "bot_database.db")
 
-# 転送先メッセージの自動削除日数（デフォルト: 7日）
-DELETE_AFTER_DAYS = 7
+# デフォルトの保持日数
+DEFAULT_DELETE_AFTER_DAYS = int(os.getenv("DEFAULT_DELETE_AFTER_DAYS", "7"))
