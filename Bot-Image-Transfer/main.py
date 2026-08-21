@@ -213,9 +213,8 @@ async def clean_old_messages():
 # ---------------------------------------------------------
 # Bot起動
 # ---------------------------------------------------------
-
 if __name__ == "__main__":
-    keep_alive()  # 👈 Bot起動前にダミーWebサーバーをバックグラウンド起動
+    keep_alive()  # Webサーバーの起動（Renderポート対策）
     if DISCORD_BOT_TOKEN:
         bot.run(DISCORD_BOT_TOKEN)
     else:
