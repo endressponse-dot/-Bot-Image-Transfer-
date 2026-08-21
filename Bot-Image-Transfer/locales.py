@@ -1,90 +1,133 @@
-import discord
-
-TEXTS = {
-    "en": {
-        "map_title": "📊 **Forwarding Group Configuration List**",
-        "no_groups": "No registered groups.",
-        "none": "None",
-        "source": "Source",
-        "dest": "Destination",
-        "menu_prompt": "Select an operation from the buttons below:",
-        "btn_add": "Add / Edit Group",
-        "btn_del": "Delete Group",
-        "select_edit_group": "Select a group to edit, or create a new one:",
-        "select_del_group": "Select a group to delete:",
-        "new_group_option": "Create New Group",
-        "modal_new_title": "Create New Group",
-        "modal_gname_label": "Group Name",
-        "created_msg": "✅ Group **[{name}]** has been saved.",
-        "added_msg": "✅ Added {channel} as {type} to **[{name}]**.",
-        "group_deleted": "🗑️ Group **[{name}]** has been deleted.",
-        "select_target_type": "Select channel type to add to **[{name}]**:",
-        "btn_add_src": "Add Source (📥)",
-        "btn_add_dest": "Add Destination (📤)",
-        "reset_warning": "⚠️ Are you sure you want to reset all settings for this server?",
-        "btn_confirm_reset": "Reset All",
-        "btn_cancel": "Cancel",
-        "reset_complete": "✅ All group settings have been reset.",
-        "reset_cancelled": "Cancelled.",
-        "embed_title": "Open Original Post (Thread)",
-        "embed_desc": "Posted by {author} (from #{channel})"
+LOCALES = {
+    "ja": { # 日本語
+        "embed_title": "📌 Open Original Post (Thread)",
+        "embed_desc": "👤 **Posted by {author}** (from #{channel})\n{author} さんの投稿（#{channel} より）",
+        "menu_prompt": "設定する操作を選択してください:",
+        "select_group_to_edit": "編集・追加するグループを選択してください:",
+        "select_group_to_delete": "削除するグループを選択してください:",
+        "reset_warning": "⚠️ **警告**: サーバー内のすべての転送グループ設定を初期化します。よろしいですか？",
+        "clear_confirm": "⚠️ **警告**: このチャンネル内のメッセージをすべて削除します。よろしいですか？",
+        "retention_prompt": "このグループの画像保持期間（自動削除までの日数）を設定してください:"
     },
-    "ja": {
-        "map_title": "📊 **転送グループ設定一覧**",
-        "no_groups": "登録されているグループはありません。",
-        "none": "なし",
-        "source": "転送元",
-        "dest": "転送先",
-        "menu_prompt": "以下のボタンから操作を選択してください:",
-        "btn_add": "グループの追加・編集",
-        "btn_del": "グループの削除",
-        "select_edit_group": "編集するグループを選択するか、新規作成してください:",
-        "select_del_group": "削除するグループを選択してください:",
-        "new_group_option": "新規グループを作成",
-        "modal_new_title": "新規グループ作成",
-        "modal_gname_label": "グループ名",
-        "created_msg": "✅ グループ **[{name}]** を保存しました。",
-        "added_msg": "✅ **[{name}]** の{type}に {channel} を追加しました。",
-        "group_deleted": "🗑️ グループ **[{name}]** を削除しました。",
-        "select_target_type": "**[{name}]** に追加するチャンネルの種類を選択してください:",
-        "btn_add_src": "転送元を追加 (📥)",
-        "btn_add_dest": "転送先を追加 (📤)",
-        "reset_warning": "⚠️ このサーバーの全設定をリセットしてもよろしいですか？",
-        "btn_confirm_reset": "すべてリセット",
-        "btn_cancel": "キャンセル",
-        "reset_complete": "✅ すべてのグループ設定をリセットしました。",
-        "reset_cancelled": "キャンセルしました。",
-        "embed_title": "元の投稿（スレッド）を開く",
-        "embed_desc": "{author} さんの投稿（#{channel} より）"
+    "en": { # 英語 (デフォルト/アメリカ)
+        "embed_title": "📌 Open Original Post (Thread)",
+        "embed_desc": "👤 **Posted by {author}** (from #{channel})",
+        "menu_prompt": "Select an operation:",
+        "select_group_to_edit": "Select a group to edit/add:",
+        "select_group_to_delete": "Select a group to delete:",
+        "reset_warning": "⚠️ **Warning**: This will reset all forwarding settings for this server. Continue?",
+        "clear_confirm": "⚠️ **Warning**: This will delete ALL messages in this channel. Continue?",
+        "retention_prompt": "Select retention period (days before auto-deletion) for this group:"
+    },
+    "zh-CN": { # 中国語 簡体字
+        "embed_title": "📌 Open Original Post (Thread)",
+        "embed_desc": "👤 **Posted by {author}** (from #{channel})\n{author} 发送的帖子（来自 #{channel}）",
+        "menu_prompt": "请选择要执行的操作：",
+        "select_group_to_edit": "请选择要编辑/添加的分组：",
+        "select_group_to_delete": "请选择要删除的分组：",
+        "reset_warning": "⚠️ **警告**：这将重置此服务器的所有转发设置。确定要继续吗？",
+        "clear_confirm": "⚠️ **警告**：这将删除此频道中的所有消息。确定要继续吗？",
+        "retention_prompt": "请选择此分组的保留期限（自动删除前的天数）："
+    },
+    "zh-TW": { # 中国語 繁体字
+        "embed_title": "📌 Open Original Post (Thread)",
+        "embed_desc": "👤 **Posted by {author}** (from #{channel})\n{author} 貼文（來自 #{channel}）",
+        "menu_prompt": "請選擇操作：",
+        "select_group_to_edit": "請選擇要編輯/新增的群組：",
+        "select_group_to_delete": "請選擇要刪除的群組：",
+        "reset_warning": "⚠️ **警告**：這將重置此伺服器的所有轉發設定。確定要繼續嗎？",
+        "clear_confirm": "⚠️ **警告**：這將刪除此頻道中的所有訊息。確定要繼續嗎？",
+        "retention_prompt": "請選擇此群組的保留期限（自動刪除前的天數）："
+    },
+    "ko": { # 韓国語
+        "embed_title": "📌 Open Original Post (Thread)",
+        "embed_desc": "👤 **Posted by {author}** (from #{channel})\n{author} 님의 게시物 (#{channel} 에서)",
+        "menu_prompt": "作業を選択してください:",
+        "select_group_to_edit": "編集・追加するグループを選択してください:",
+        "select_group_to_delete": "削除するグループを選択してください:",
+        "reset_warning": "⚠️ **경고**: 이 서버의 모든 전송 설정이 초기화됩니다. 계속하시겠습니까?",
+        "clear_confirm": "⚠️ **경고**: 이 채널의 모든 메시지가 삭제됩니다. 계속하시겠습니까?",
+        "retention_prompt": "이 그룹의 자동 삭제 期間(일)을 설정하세요:"
+    },
+    "es": { # スペイン語
+        "embed_title": "📌 Open Original Post (Thread)",
+        "embed_desc": "👤 **Posted by {author}** (from #{channel})\nPublicado por {author} (desde #{channel})",
+        "menu_prompt": "Seleccione una operación:",
+        "select_group_to_edit": "Seleccione un grupo para editar/añadir:",
+        "select_group_to_delete": "Seleccione un grupo para eliminar:",
+        "reset_warning": "⚠️ **Advertencia**: Esto restablecerá todas las configuraciones de reenvío. ¿Continuar?",
+        "clear_confirm": "⚠️ **Advertencia**: Esto eliminará TODOS los mensajes en este canal. ¿Continuar?",
+        "retention_prompt": "Seleccione el período de retención (días antes del borrado automático):"
+    },
+    "fr": { # フランス語
+        "embed_title": "📌 Open Original Post (Thread)",
+        "embed_desc": "👤 **Posted by {author}** (from #{channel})\nPublié par {author} (depuis #{channel})",
+        "menu_prompt": "Sélectionnez une opération :",
+        "select_group_to_edit": "Sélectionnez un groupe à modifier/ajouter :",
+        "select_group_to_delete": "Sélectionnez un groupe à supprimer :",
+        "reset_warning": "⚠️ **Avertissement** : Cela réinitialisera tous les paramètres de redirection. Continuer ?",
+        "clear_confirm": "⚠️ **Avertissement** : Cela supprimera TOUS les messages de ce salon. Continuer ?",
+        "retention_prompt": "Sélectionnez la période de conservation (jours avant suppression automatique) :"
+    },
+    "de": { # ドイツ語
+        "embed_title": "📌 Open Original Post (Thread)",
+        "embed_desc": "👤 **Posted by {author}** (from #{channel})\nGepostet von {author} (aus #{channel})",
+        "menu_prompt": "Wählen Sie eine Option:",
+        "select_group_to_edit": "Gruppe zum Bearbeiten/Hinzufügen auswählen:",
+        "select_group_to_delete": "Gruppe zum Löschen auswählen:",
+        "reset_warning": "⚠️ **Warnung**: Dies setzt alle Weiterleitungseinstellungen zurück. Fortfahren?",
+        "clear_confirm": "⚠️ **Warnung**: Dies löscht ALLE Nachrichten in diesem Kanal. Fortfahren?",
+        "retention_prompt": "Aufbewahrungsfrist (Tage bis zur automatischen Löschung) auswählen:"
+    },
+    "it": { # イタリア語
+        "embed_title": "📌 Open Original Post (Thread)",
+        "embed_desc": "👤 **Posted by {author}** (from #{channel})\nPubblicato da {author} (da #{channel})",
+        "menu_prompt": "Seleziona un'operazione:",
+        "select_group_to_edit": "Seleziona un gruppo da modificare/aggiungere:",
+        "select_group_to_delete": "Seleziona un gruppo da eliminare:",
+        "reset_warning": "⚠️ **Avviso**: Questo ripristinerà tutte le impostazioni di inoltro. Continuare?",
+        "clear_confirm": "⚠️ **Avviso**: Questo eliminerà TUTTI i messaggi in questo canale. Continuare?",
+        "retention_prompt": "Seleziona il periodo di conservazione (giorni prima dell'eliminazione automatica):"
+    },
+    "pt": { # ポルトガル語
+        "embed_title": "📌 Open Original Post (Thread)",
+        "embed_desc": "👤 **Posted by {author}** (from #{channel})\nPostado por {author} (de #{channel})",
+        "menu_prompt": "Selecione uma operação:",
+        "select_group_to_edit": "Selecione um grupo para editar/adicionar:",
+        "select_group_to_delete": "Selecione um grupo para deletar:",
+        "reset_warning": "⚠️ **Aviso**: Isso redefinirá todas as configurações de reencaminhamento. Continuar?",
+        "clear_confirm": "⚠️ **Aviso**: Isso deletará TODAS as mensagens neste canal. Continuar?",
+        "retention_prompt": "Selecione o período de retenção (dias antes da exclusão automática):"
+    },
+    "ru": { # ロシア語
+        "embed_title": "📌 Open Original Post (Thread)",
+        "embed_desc": "👤 **Posted by {author}** (from #{channel})\nОпубликовано {author} (из #{channel})",
+        "menu_prompt": "Выберите действие:",
+        "select_group_to_edit": "Выберите группу для редактирования/добавления:",
+        "select_group_to_delete": "Выберите группу для удаления:",
+        "reset_warning": "⚠️ **Предупреждение**: Все настройки пересылки будут сброшены. Продолжить?",
+        "clear_confirm": "⚠️ **Предупреждение**: Все сообщения в этом канале будут удалены. Продолжить?",
+        "retention_prompt": "Выберите срок хранения (дни до автоматического удаления):"
+    },
+    "th": { # タイ語
+        "embed_title": "📌 Open Original Post (Thread)",
+        "embed_desc": "👤 **Posted by {author}** (from #{channel})\nโพสต์โดย {author} (จาก #{channel})",
+        "menu_prompt": "เลือกการดำเนินการ:",
+        "select_group_to_edit": "เลือกกลุ่มที่จะแก้ไข/เพิ่ม:",
+        "select_group_to_delete": "เลือกกลุ่มที่จะลบ:",
+        "reset_warning": "⚠️ **คำเตือน**: ระบบจะรีเซ็ตการตั้งค่าการส่งต่อทั้งหมด ดำเนินการต่อหรือไม่?",
+        "clear_confirm": "⚠️ **คำเตือน**: ข้อความทั้งหมดในช่องนี้จะถูกลบ ดำเนินการต่อหรือไม่?",
+        "retention_prompt": "เลือกระยะเวลาการเก็บรักษา (วันก่อนลบอัตโนมัติ):"
     }
 }
 
-LANG_MAP = {
-    "en": "🇺🇸 English",
-    "ja": "🇯🇵 日本語",
-    "ko": "🇰🇷 한국어",
-    "zh-cn": "🇨🇳 简体中文",
-    "zh-tw": "🇹🇼 繁體中文",
-    "fr": "🇫🇷 Français",
-    "de": "🇩🇪 Deutsch",
-    "es": "🇪🇸 Español",
-    "it": "🇮🇹 Italiano",
-    "ru": "🇷🇺 Русский",
-    "pt": "🇵🇹 Português",
-    "hi": "🇮🇳 हिन्दी"
-}
-
 def get_text(locale_str: str, key: str) -> str:
-    """指定されたロケール文字列から該当する言語のテキストを安全に取得します。"""
-    lang = locale_str.split('-')[0].lower() if locale_str else "en"
-    if lang not in TEXTS:
-        lang = "en"
-    return TEXTS[lang].get(key, TEXTS["en"].get(key, key))
-
-def get_lang_display(lang_code: str, server_locale_str: str) -> str:
-    """設定言語の表示名称を返します。"""
-    if lang_code == "default":
-        s_lang = server_locale_str.split('-')[0].lower()
-        disp_name = LANG_MAP.get(s_lang, f"Standard ({server_locale_str})")
-        return f"⚙️ Server Default ({disp_name})"
+    lang = str(locale_str).split("-")[0].lower()
+    # 繁体字/簡体字の特別判定
+    if "zh" in lang:
+        lang = "zh-TW" if "tw" in str(locale_str).lower() or "hk" in str(locale_str).lower() else "zh-CN"
+    
+    if lang in LOCALES and key in LOCALES[lang]:
+        return LOCALES[lang][key]
+    return LOCALES["en"].get(key, key)
     return LANG_MAP.get(lang_code, f"🌐 {lang_code}")
