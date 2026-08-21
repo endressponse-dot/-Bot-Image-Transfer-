@@ -13,6 +13,8 @@ from ui_language import send_language_menu
 from ui_group import SetGroupOpView
 from ui_reset import ResetConfirmView
 
+from keep_alive import keep_alive
+
 # Botの準備
 intents = discord.Intents.default()
 intents.message_content = True
@@ -164,4 +166,5 @@ async def clean_old_messages():
                     print(f"削除エラー: {e}")
 
 if __name__ == "__main__":
+    keep_alive()
     bot.run(BOT_TOKEN)
