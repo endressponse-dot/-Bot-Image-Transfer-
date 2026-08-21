@@ -10,6 +10,7 @@ from locales import get_text
 from database import init_db, get_guild_language_setting, build_group_map_text
 from ui_language import send_language_menu
 from ui_group import send_group_management_menu
+from keep_alive import keep_alive
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -212,7 +213,9 @@ async def clean_old_messages():
 # ---------------------------------------------------------
 # Bot起動
 # ---------------------------------------------------------
+
 if __name__ == "__main__":
+    keep_alive()  # 👈 Bot起動前にダミーWebサーバーをバックグラウンド起動
     if DISCORD_BOT_TOKEN:
         bot.run(DISCORD_BOT_TOKEN)
     else:
