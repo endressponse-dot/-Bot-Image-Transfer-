@@ -1,171 +1,219 @@
-import sqlite3
+import os
 import asyncio
-from datetime import datetime, timedelta, timezone
-
+import sqlite3
+from datetime import datetime, timezone, timedelta
 import discord
-from discord.ext import tasks
-from discord import app_commands
+from discord.ext import commands, tasks
 
-from config import BOT_TOKEN, DB_FILE, DELETE_AFTER_DAYS
+from config import DISCORD_BOT_TOKEN, DB_FILE, DEFAULT_DELETE_AFTER_DAYS
 from locales import get_text
-from database import init_db, build_group_map_text, get_guild_language_setting
+from database import init_db, get_guild_language_setting, build_group_map_text
 from ui_language import send_language_menu
-from ui_group import SetGroupOpView
-from ui_reset import ResetConfirmView
+from ui_group import send_group_management_menu
 
-# Web サーバー（Render用ポート開放）の読み込みと即時起動
-from keep_alive import keep_alive
-keep_alive()
-
-# Botの準備
 intents = discord.Intents.default()
 intents.message_content = True
-bot = discord.Client(intents=intents)
-tree = app_commands.CommandTree(bot)
+bot = commands.Bot(command_prefix="!", intents=intents)
 
+# ---------------------------------------------------------
+# 初期化処理
+# ---------------------------------------------------------
 @bot.event
 async def on_ready():
     init_db()
-    await tree.sync()
-    if not clean_old_messages.is_running():
-        clean_old_messages.start()
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    try:
+        synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} command(s)")
+    except Exception as e:
+        print(f"Failed to sync commands: {e}")
+    
+    clean_old_messages.start()
 
-# ==========================================
-# 🚀 スラッシュコマンド
-# ==========================================
-
-@tree.command(name="set_group", description="グループの確認・追加編集・削除を行います")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_group(interaction: discord.Interaction):
-    map_text = build_group_map_text(interaction.guild_id, interaction.locale, bot)
-    view = SetGroupOpView(interaction.guild_id, interaction.locale, bot)
-    msg = f"{map_text}\n\n{get_text(str(interaction.locale), 'menu_prompt')}"
-    await interaction.response.send_message(msg, view=view, ephemeral=True)
-
-@tree.command(name="set_language", description="転送先で表示されるメッセージの言語（メイン・サブ）を設定します")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_language(interaction: discord.Interaction):
-    await send_language_menu(interaction, interaction.guild_id, interaction.locale)
-
-@tree.command(name="reset_all_settings", description="【危険】このサーバーのすべての転送グループ設定をリセットします")
-@app_commands.checks.has_permissions(administrator=True)
-async def reset_all_settings(interaction: discord.Interaction):
-    view = ResetConfirmView(interaction.guild_id, interaction.locale)
-    msg = get_text(str(interaction.locale), "reset_warning")
-    await interaction.response.send_message(msg, view=view, ephemeral=True)
-
-# ==========================================
-# 🔄 転送処理 ＆ 自動削除
-# ==========================================
-
+# ---------------------------------------------------------
+# 1. 転送メッセージ処理（Embedデザイン構築の更新）
+# ---------------------------------------------------------
 @bot.event
-async def on_message(message):
+async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
 
-    channel = message.channel
-    parent_id = getattr(channel, "parent_id", None)
+    # 画像アタッチメントがなければスキップ
+    if not message.attachments:
+        await bot.process_commands(message)
+        return
 
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute('SELECT group_name, channel_id FROM group_channels WHERE guild_id = ? AND type = "source"', (message.guild.id,))
-    source_rows = c.fetchall()
+    
+    # 送信チャンネルがどのグループの転送元(src)か取得
+    c.execute('SELECT group_name FROM group_channels WHERE guild_id = ? AND channel_id = ? AND type = "src"',
+              (message.guild.id, message.channel.id))
+    src_rows = c.fetchall()
+    
+    if not src_rows:
+        conn.close()
+        await bot.process_commands(message)
+        return
 
-    dest_ids = []
-    image_attachments = []
+    main_lang, _ = get_guild_language_setting(message.guild.id)
+    actual_lang = message.guild.preferred_locale if main_lang == "default" else main_lang
 
-    for group_name, src_id in source_rows:
-        if channel.id == src_id or parent_id == src_id:
-            image_attachments = [
-                att for att in message.attachments 
-                if att.content_type and att.content_type.startswith("image/")
-            ]
+    embed_title = get_text(actual_lang, "embed_title")
+    embed_desc_template = get_text(actual_lang, "embed_desc")
+    
+    # 📌 マークダウンリンク付きタイトル・太字＆絵文字つきコンパクトDescriptionの作成
+    title_text = f"[{embed_title}]({message.jump_url})"
+    formatted_desc = embed_desc_template.format(
+        author=message.author.mention,
+        channel=message.channel.name
+    )
 
-            if image_attachments:
-                c.execute('SELECT channel_id FROM group_channels WHERE guild_id = ? AND group_name = ? AND type = "dest"', (message.guild.id, group_name))
-                dest_ids = [row[0] for row in c.fetchall()]
-            break
+    for row in src_rows:
+        group_name = row[0]
+        c.execute('SELECT channel_id FROM group_channels WHERE guild_id = ? AND group_name = ? AND type = "dest"',
+                  (message.guild.id, group_name))
+        dest_rows = c.fetchall()
+        
+        for d_row in dest_rows:
+            dest_ch = message.guild.get_channel(d_row[0])
+            if dest_ch:
+                embed = discord.Embed(
+                    title="",
+                    description=f"### {title_text}\n{formatted_desc}",
+                    color=discord.Color.blue()
+                )
+                if message.content:
+                    embed.add_field(name="💬 Message", value=message.content, inline=False)
+                
+                # 最初のアタッチメント画像をメインに設定
+                embed.set_image(url=message.attachments[0].url)
+                await dest_ch.send(embed=embed)
+                
+                # 複数画像がある場合は追加で送信
+                for att in message.attachments[1:]:
+                    img_embed = discord.Embed(color=discord.Color.blue())
+                    img_embed.set_image(url=att.url)
+                    await dest_ch.send(embed=img_embed)
 
     conn.close()
+    await bot.process_commands(message)
 
-    if image_attachments and dest_ids:
-        main_lang_code, sub_langs_str = get_guild_language_setting(message.guild.id)
+# ---------------------------------------------------------
+# 2. スラッシュコマンド群
+# ---------------------------------------------------------
+@bot.tree.command(name="config", description="転送設定メニューを開きます")
+async def config_command(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ このコマンドは管理者専用です。", ephemeral=True)
+        return
+    
+    await send_group_management_menu(interaction, interaction.guild_id, interaction.locale)
+
+@bot.tree.command(name="language", description="言語設定を変更します")
+async def language_command(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ このコマンドは管理者専用です。", ephemeral=True)
+        return
+    
+    await send_language_menu(interaction, interaction.guild_id, interaction.locale)
+
+@bot.tree.command(name="list", description="現在の設定一覧を表示します")
+async def list_command(interaction: discord.Interaction):
+    text = build_group_map_text(interaction.guild_id, interaction.locale, bot)
+    await interaction.response.send_message(text, ephemeral=True)
+
+# 3. チャンネル全削除機能 (/clear_channel)
+class ClearConfirmView(discord.ui.View):
+    def __init__(self, locale):
+        super().__init__(timeout=60)
+        self.locale = locale
+
+    @discord.ui.button(label="🗑️ 実行する", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        channel = interaction.channel
         
-        # サーバーの言語設定（ロケール）を安全にパース
-        server_locale_str = str(message.guild.preferred_locale) if message.guild.preferred_locale else "en"
-        server_lang_base = server_locale_str.split('-')[0].lower()
-
-        # メイン言語が未設定(default)の場合はサーバーの言語設定を採用
-        actual_main = main_lang_code if main_lang_code and main_lang_code != "default" else server_lang_base
-
-        title_text = f"🔗 {get_text(actual_main, 'embed_title')}"
-        jump_url = message.jump_url
+        now = datetime.now(timezone.utc)
+        fourteen_days_ago = now - timedelta(days=14)
         
-        desc_lines = []
-        # メイン言語の設定に基づく説明文を取得して追加
-        main_desc = get_text(actual_main, "embed_desc").format(
-            author=message.author.display_name,
-            channel=channel.name
-        )
-        desc_lines.append(main_desc)
-        
-        # サブ言語（langmap）の設定がある場合、それぞれの言語で説明文を追加
-        if sub_langs_str:
-            sub_langs = sub_langs_str.split(',')
-            for sl in sub_langs:
-                sl_clean = sl.strip().lower()
-                if sl_clean and sl_clean != "none":
-                    sub_desc = get_text(sl_clean, "embed_desc").format(
-                        author=message.author.display_name,
-                        channel=channel.name
-                    )
-                    desc_lines.append(sub_desc)
+        deleted_count = 0
+        # 14日以内のメッセージは一括削除(purge)
+        try:
+            purged = await channel.purge(limit=1000, after=fourteen_days_ago)
+            deleted_count += len(purged)
+        except Exception as e:
+            print(f"Purge error: {e}")
 
-        final_desc = "\n\n".join(desc_lines)
+        # 14日以上経過した古いメッセージは個別に削除
+        async for msg in channel.history(limit=1000, before=fourteen_days_ago):
+            try:
+                await msg.delete()
+                deleted_count += 1
+                await asyncio.sleep(1.0)  # レートリミット回避のウェイト
+            except Exception:
+                pass
+                
+        await interaction.followup.send(f"🧹 チャンネル内のメッセージを削除しました（計 {deleted_count} 通）。", ephemeral=True)
 
-        for dest_id in dest_ids:
-            dest_channel = bot.get_channel(dest_id)
-            if dest_channel:
-                for att in image_attachments:
-                    file = await att.to_file()
-                    embed = discord.Embed(
-                        title=title_text,
-                        url=jump_url,
-                        description=final_desc,
-                        color=discord.Color.blue()
-                    )
-                    embed.set_image(url=f"attachment://{file.filename}")
-                    await dest_channel.send(embed=embed, file=file)
+@bot.tree.command(name="clear_channel", description="このチャンネル内のメッセージをすべて削除します（管理者専用）")
+async def clear_channel_command(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ このコマンドは管理者専用です。", ephemeral=True)
+        return
+    
+    warn_text = get_text(interaction.locale, "clear_confirm")
+    view = ClearConfirmView(interaction.locale)
+    await interaction.response.send_message(warn_text, view=view, ephemeral=True)
 
-@tasks.loop(hours=12)
+# ---------------------------------------------------------
+# 4. 動的自動削除バックグラウンドタスク
+# ---------------------------------------------------------
+@tasks.loop(hours=1)
 async def clean_old_messages():
-    await bot.wait_until_ready()
-    now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=DELETE_AFTER_DAYS)
-
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute('SELECT DISTINCT channel_id FROM group_channels WHERE type = "dest"')
-    dest_ids = [row[0] for row in c.fetchall()]
+    
+    # 転送先(dest)チャンネルとその保持日数（グループ設定）を取得
+    c.execute('''
+        SELECT gc.channel_id, COALESCE(gs.retention_days, ?) 
+        FROM group_channels gc
+        LEFT JOIN group_settings gs ON gc.guild_id = gs.guild_id AND gc.group_name = gs.group_name
+        WHERE gc.type = 'dest'
+    ''', (DEFAULT_DELETE_AFTER_DAYS,))
+    
+    dest_channels = c.fetchall()
     conn.close()
 
-    for dest_id in dest_ids:
-        dest_channel = bot.get_channel(dest_id)
-        if not dest_channel:
+    now = datetime.now(timezone.utc)
+
+    for ch_id, retention_days in dest_channels:
+        if retention_days <= 0:
+            continue  # 0以下の場合は削除無制限
+        
+        channel = bot.get_channel(ch_id)
+        if not channel:
             continue
 
-        async for message in dest_channel.history(limit=None):
-            if message.created_at < cutoff:
+        cutoff_time = now - timedelta(days=retention_days)
+        
+        try:
+            async for message in channel.history(limit=200, before=cutoff_time):
+                if message.pinned:
+                    continue
                 try:
-                    if (now - message.created_at).days < 14:
-                        await dest_channel.purge(limit=100, check=lambda m: m.created_at < cutoff)
-                        break
-                    else:
-                        await message.delete()
-                        await asyncio.sleep(1)
+                    await message.delete()
+                    await asyncio.sleep(1.0)
                 except Exception as e:
-                    print(f"削除エラー: {e}")
+                    print(f"Error deleting message {message.id}: {e}")
+        except Exception as e:
+            print(f"Error checking channel {ch_id}: {e}")
 
+# ---------------------------------------------------------
+# Bot起動
+# ---------------------------------------------------------
 if __name__ == "__main__":
-    bot.run(BOT_TOKEN)
+    if DISCORD_BOT_TOKEN:
+        bot.run(DISCORD_BOT_TOKEN)
+    else:
+        print("Error: DISCORD_BOT_TOKENが設定されていません。")
