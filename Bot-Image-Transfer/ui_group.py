@@ -1,215 +1,208 @@
+import sqlite3
 import discord
+from discord import app_commands
+from config import DB_FILE
 from locales import get_text
-from database import (
-    get_guild_groups, build_group_map_text, add_group_channel, delete_group
-)
+from database import build_group_map_text, add_group_channel, delete_group_channel, set_group_description
 
+# ==========================================
+# 1. 操作選択メニュー（確認・編集・削除）
+# ==========================================
 class SetGroupOpView(discord.ui.View):
-    def __init__(self, guild_id: int, locale: discord.Locale, bot_client):
+    def __init__(self, guild_id: int, locale: discord.Locale, bot: discord.Client):
         super().__init__(timeout=180)
         self.guild_id = guild_id
         self.locale = locale
-        self.bot_client = bot_client
+        self.bot = bot
 
-        self.add_btn.label = get_text(str(locale), "btn_add")
-        self.del_btn.label = get_text(str(locale), "btn_del")
-        self.close_btn.label = "メニューを閉じる"
+    @discord.ui.button(label="＋ 追加・編集", style=discord.ButtonStyle.primary, custom_id="grp_add_edit")
+    async def add_edit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('SELECT DISTINCT group_name FROM group_channels WHERE guild_id = ?', (self.guild_id,))
+        groups = [row[0] for row in c.fetchall()]
+        conn.close()
 
-    @discord.ui.button(style=discord.ButtonStyle.primary, emoji="✏️", custom_id="add_btn", row=0)
-    async def add_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        groups = get_guild_groups(self.guild_id)
-        view = GroupSelectForEditView(self.guild_id, groups, self.locale, self.bot_client)
-        map_text = build_group_map_text(self.guild_id, self.locale, self.bot_client)
-        msg = f"{map_text}\n\n{get_text(str(self.locale), 'select_edit_group')}"
-        await interaction.response.edit_message(content=msg, view=view)
-
-    @discord.ui.button(style=discord.ButtonStyle.danger, emoji="🗑️", custom_id="del_btn", row=0)
-    async def del_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        groups = get_guild_groups(self.guild_id)
         if not groups:
-            map_text = build_group_map_text(self.guild_id, self.locale, self.bot_client)
-            await interaction.response.edit_message(content=map_text, view=self)
+            modal = GroupNameModal(self.guild_id, self.locale, self.bot)
+            await interaction.response.send_modal(modal)
+        else:
+            view = GroupSelectForEditView(self.guild_id, self.locale, self.bot, groups)
+            msg = get_text(str(self.locale), "select_group_to_edit")
+            await interaction.response.send_message(msg, view=view, ephemeral=True)
+
+    @discord.ui.button(label="🗑️ グループ単位削除", style=discord.ButtonStyle.danger, custom_id="grp_delete")
+    async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('SELECT DISTINCT group_name FROM group_channels WHERE guild_id = ?', (self.guild_id,))
+        groups = [row[0] for row in c.fetchall()]
+        conn.close()
+
+        if not groups:
+            await interaction.response.send_message("削除できるグループがありません。", ephemeral=True)
             return
 
-        view = GroupSelectForDeleteView(self.guild_id, groups, self.locale, self.bot_client)
-        map_text = build_group_map_text(self.guild_id, self.locale, self.bot_client)
-        msg = f"{map_text}\n\n{get_text(str(self.locale), 'select_del_group')}"
-        await interaction.response.edit_message(content=msg, view=view)
+        view = GroupSelectForDeleteView(self.guild_id, self.locale, self.bot, groups)
+        msg = get_text(str(self.locale), "select_group_to_delete")
+        await interaction.response.send_message(msg, view=view, ephemeral=True)
 
-    @discord.ui.button(style=discord.ButtonStyle.secondary, emoji="✖️", custom_id="close_btn", row=1)
-    async def close_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        map_text = build_group_map_text(self.guild_id, self.locale, self.bot_client)
-        await interaction.response.edit_message(content=f"{map_text}\n\n🔒 設定メニューを終了しました。", view=None)
 
+# ==========================================
+# 2. 編集用グループ選択ドロップダウン
+# ==========================================
 class GroupSelectForEditView(discord.ui.View):
-    def __init__(self, guild_id: int, groups: list, locale: discord.Locale, bot_client):
+    def __init__(self, guild_id: int, locale: discord.Locale, bot: discord.Client, groups: list):
         super().__init__(timeout=180)
         self.guild_id = guild_id
         self.locale = locale
-        self.bot_client = bot_client
+        self.bot = bot
 
-        options = [discord.SelectOption(label=get_text(str(locale), "new_group_option"), value="__NEW__", emoji="➕")]
-        options.extend([discord.SelectOption(label=g, value=g, emoji="📁") for g in groups[:24]])
+        options = [discord.SelectOption(label=g, value=g) for g in groups[:25]]
+        options.append(discord.SelectOption(label="＋ 新しいグループを作成", value="__NEW__", description="新しくグループ名を指定して作成します"))
 
-        select = discord.ui.Select(placeholder="...", options=options)
+        select = discord.ui.Select(placeholder="グループを選択してください...", min_values=1, max_values=1, options=options)
         select.callback = self.select_callback
         self.add_item(select)
 
     async def select_callback(self, interaction: discord.Interaction):
-        selected = interaction.data["values"][0]
-        if selected == "__NEW__":
-            modal = NewGroupModal(self.guild_id, self.locale, self.bot_client)
+        selected_value = interaction.data['values'][0]
+
+        if selected_value == "__NEW__":
+            modal = GroupNameModal(self.guild_id, self.locale, self.bot)
             await interaction.response.send_modal(modal)
-            map_text = build_group_map_text(self.guild_id, self.locale, self.bot_client)
-            view = SetGroupOpView(self.guild_id, self.locale, self.bot_client)
-            await interaction.message.edit(content=f"{map_text}\n\n{get_text(str(self.locale), 'menu_prompt')}", view=view)
         else:
-            view = AddTypeTargetView(self.guild_id, selected, self.locale, self.bot_client)
-            map_text = build_group_map_text(self.guild_id, self.locale, self.bot_client)
-            msg = f"{map_text}\n\n{get_text(str(self.locale), 'select_target_type').format(name=selected)}"
+            view = EditGroupDetailView(self.guild_id, self.locale, self.bot, selected_value)
+            map_text = build_group_map_text(self.guild_id, self.locale, self.bot)
+            msg = f"{map_text}\n\n【 {selected_value} 】の設定を変更中:"
             await interaction.response.edit_message(content=msg, view=view)
 
-class NewGroupModal(discord.ui.Modal):
-    def __init__(self, guild_id: int, locale: discord.Locale, bot_client):
-        super().__init__(title=get_text(str(locale), "modal_new_title"))
+
+# ==========================================
+# 3. 新規グループ名入力モーダル
+# ==========================================
+class GroupNameModal(discord.ui.Modal):
+    def __init__(self, guild_id: int, locale: discord.Locale, bot: discord.Client):
+        super().__init__(title="グループ新規作成")
         self.guild_id = guild_id
         self.locale = locale
-        self.bot_client = bot_client
+        self.bot = bot
 
         self.group_name_input = discord.ui.TextInput(
-            label=get_text(str(locale), "modal_gname_label"),
-            placeholder="Ex: Group-A",
-            required=True
+            label="グループ名",
+            placeholder="例: main-images, art-share など",
+            required=True,
+            max_length=30
         )
         self.add_item(self.group_name_input)
 
     async def on_submit(self, interaction: discord.Interaction):
-        gname = self.group_name_input.value.strip()
-        view = NewGroupChannelSelectView(self.guild_id, gname, self.locale, self.bot_client)
-        msg = f"📁 **[{gname}]** の転送元（📥）と転送先（📤）チャンネルを選択してください。"
-        await interaction.response.send_message(content=msg, view=view, ephemeral=True)
+        group_name = self.group_name_input.value.strip()
+        view = EditGroupDetailView(self.guild_id, self.locale, self.bot, group_name)
+        map_text = build_group_map_text(self.guild_id, self.locale, self.bot)
+        msg = f"{map_text}\n\n【 {group_name} 】の設定編集:"
+        await interaction.response.send_message(msg, view=view, ephemeral=True)
 
-class NewGroupChannelSelectView(discord.ui.View):
-    def __init__(self, guild_id: int, group_name: str, locale: discord.Locale, bot_client):
+
+# ==========================================
+# 4. グループ詳細設定（転送元・先・メモ変更）
+# ==========================================
+class EditGroupDetailView(discord.ui.View):
+    def __init__(self, guild_id: int, locale: discord.Locale, bot: discord.Client, group_name: str):
         super().__init__(timeout=180)
         self.guild_id = guild_id
-        self.group_name = group_name
         self.locale = locale
-        self.bot_client = bot_client
-        self.selected_src = None
-        self.selected_dest = None
+        self.bot = bot
+        self.group_name = group_name
 
-        self.src_select = discord.ui.ChannelSelect(
-            placeholder="📥 転送元チャンネルを選択...",
-            channel_types=[discord.ChannelType.text, discord.ChannelType.news, discord.ChannelType.forum],
-            min_values=1, max_values=1
+        # 転送元チャンネル選択
+        src_select = discord.ui.ChannelSelect(
+            placeholder="転送元(Source) チャンネルを選択",
+            channel_types=[discord.ChannelType.text, discord.ChannelType.news, discord.ChannelType.public_thread, discord.ChannelType.private_thread],
+            min_values=0, max_values=1, custom_id="select_src"
         )
-        self.src_select.callback = self.src_callback
-        self.add_item(self.src_select)
+        src_select.callback = self.src_callback
+        self.add_item(src_select)
 
-        self.dest_select = discord.ui.ChannelSelect(
-            placeholder="📤 転送先チャンネルを選択...",
-            channel_types=[discord.ChannelType.text, discord.ChannelType.news],
-            min_values=1, max_values=1
+        # 転送先チャンネル選択
+        dest_select = discord.ui.ChannelSelect(
+            placeholder="転送先(Destination) チャンネルを選択",
+            channel_types=[discord.ChannelType.text, discord.ChannelType.news, discord.ChannelType.public_thread, discord.ChannelType.private_thread],
+            min_values=0, max_values=1, custom_id="select_dest"
         )
-        self.dest_select.callback = self.dest_callback
-        self.add_item(self.dest_select)
+        dest_select.callback = self.dest_callback
+        self.add_item(dest_select)
 
     async def src_callback(self, interaction: discord.Interaction):
-        self.selected_src = self.src_select.values[0].id
-        await interaction.response.defer()
+        selected_channels = interaction.data.get('values', [])
+        if selected_channels:
+            ch_id = int(selected_channels[0])
+            add_group_channel(self.guild_id, self.group_name, ch_id, "source")
+        
+        map_text = build_group_map_text(self.guild_id, self.locale, self.bot)
+        await interaction.response.edit_message(content=f"{map_text}\n\n【 {self.group_name} 】の設定を変更しました。", view=self)
 
     async def dest_callback(self, interaction: discord.Interaction):
-        self.selected_dest = self.dest_select.values[0].id
-        await interaction.response.defer()
+        selected_channels = interaction.data.get('values', [])
+        if selected_channels:
+            ch_id = int(selected_channels[0])
+            add_group_channel(self.guild_id, self.group_name, ch_id, "dest")
 
-    @discord.ui.button(label="保存する", style=discord.ButtonStyle.success, emoji="💾", row=2)
-    async def save_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.selected_src or not self.selected_dest:
-            await interaction.response.send_message("転送元と転送先を両方選択してください。", ephemeral=True)
-            return
+        map_text = build_group_map_text(self.guild_id, self.locale, self.bot)
+        await interaction.response.edit_message(content=f"{map_text}\n\n【 {self.group_name} 】の設定を変更しました。", view=self)
 
-        add_group_channel(self.guild_id, self.group_name, self.selected_src, "source")
-        add_group_channel(self.guild_id, self.group_name, self.selected_dest, "dest")
+    @discord.ui.button(label="📝 メモを追加/変更", style=discord.ButtonStyle.secondary, custom_id="btn_desc")
+    async def desc_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = GroupDescModal(self.guild_id, self.group_name, self.locale, self.bot)
+        await interaction.response.send_modal(modal)
 
-        map_text = build_group_map_text(self.guild_id, self.locale, self.bot_client)
-        success_msg = get_text(str(self.locale), 'created_msg').format(name=self.group_name)
-        new_view = SetGroupOpView(self.guild_id, self.locale, self.bot_client)
-        msg = f"{map_text}\n\n{success_msg}\n\n{get_text(str(self.locale), 'menu_prompt')}"
-        await interaction.response.edit_message(content=msg, view=new_view)
 
-class AddTypeTargetView(discord.ui.View):
-    def __init__(self, guild_id: int, group_name: str, locale: discord.Locale, bot_client):
-        super().__init__(timeout=180)
+# ==========================================
+# 5. グループ説明（メモ）入力モーダル
+# ==========================================
+class GroupDescModal(discord.ui.Modal):
+    def __init__(self, guild_id: int, group_name: str, locale: discord.Locale, bot: discord.Client):
+        super().__init__(title=f"【{group_name}】のメモ編集")
         self.guild_id = guild_id
         self.group_name = group_name
         self.locale = locale
-        self.bot_client = bot_client
+        self.bot = bot
 
-        self.src_btn.label = get_text(str(locale), "btn_add_src")
-        self.dest_btn.label = get_text(str(locale), "btn_add_dest")
-
-    @discord.ui.button(style=discord.ButtonStyle.primary, emoji="📥", custom_id="src_btn")
-    async def src_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        view = ChannelAddSelectView(self.guild_id, self.group_name, "source", self.locale, self.bot_client)
-        await interaction.response.edit_message(content=f"📁 **[{self.group_name}]** に追加する 📥 転送元チャンネルを選択してください:", view=view)
-
-    @discord.ui.button(style=discord.ButtonStyle.success, emoji="📤", custom_id="dest_btn")
-    async def dest_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        view = ChannelAddSelectView(self.guild_id, self.group_name, "dest", self.locale, self.bot_client)
-        await interaction.response.edit_message(content=f"📁 **[{self.group_name}]** に追加する 📤 転送先チャンネルを選択してください:", view=view)
-
-class ChannelAddSelectView(discord.ui.View):
-    def __init__(self, guild_id: int, group_name: str, channel_type: str, locale: discord.Locale, bot_client):
-        super().__init__(timeout=180)
-        self.guild_id = guild_id
-        self.group_name = group_name
-        self.channel_type = channel_type
-        self.locale = locale
-        self.bot_client = bot_client
-
-        c_types = [discord.ChannelType.text, discord.ChannelType.news, discord.ChannelType.forum] if channel_type == "source" else [discord.ChannelType.text, discord.ChannelType.news]
-        
-        self.chan_select = discord.ui.ChannelSelect(
-            placeholder="チャンネルを選択...",
-            channel_types=c_types,
-            min_values=1, max_values=1
+        self.desc_input = discord.ui.TextInput(
+            label="メモ・説明文",
+            placeholder="例: イラスト自動転送用グループ",
+            required=False,
+            max_length=100
         )
-        self.chan_select.callback = self.select_callback
-        self.add_item(self.chan_select)
+        self.add_item(self.desc_input)
 
-    async def select_callback(self, interaction: discord.Interaction):
-        cid = self.chan_select.values[0].id
-        add_group_channel(self.guild_id, self.group_name, cid, self.channel_type)
+    async def on_submit(self, interaction: discord.Interaction):
+        desc = self.desc_input.value.strip()
+        set_group_description(self.guild_id, self.group_name, desc)
+        
+        map_text = build_group_map_text(self.guild_id, self.locale, self.bot)
+        await interaction.response.send_message(f"メモを更新しました！\n\n{map_text}", ephemeral=True)
 
-        chan = self.bot_client.get_channel(cid)
-        c_mention = chan.mention if chan else f"ID:{cid}"
-        t_label = get_text(str(self.locale), "source" if self.channel_type == "source" else "dest")
 
-        map_text = build_group_map_text(self.guild_id, self.locale, self.bot_client)
-        success_msg = get_text(str(self.locale), 'added_msg').format(name=self.group_name, type=t_label, channel=c_mention)
-        new_view = SetGroupOpView(self.guild_id, self.locale, self.bot_client)
-        msg = f"{map_text}\n\n{success_msg}\n\n{get_text(str(self.locale), 'menu_prompt')}"
-        await interaction.response.edit_message(content=msg, view=new_view)
-
+# ==========================================
+# 6. 削除用グループ選択ドロップダウン
+# ==========================================
 class GroupSelectForDeleteView(discord.ui.View):
-    def __init__(self, guild_id: int, groups: list, locale: discord.Locale, bot_client):
+    def __init__(self, guild_id: int, locale: discord.Locale, bot: discord.Client, groups: list):
         super().__init__(timeout=180)
         self.guild_id = guild_id
         self.locale = locale
-        self.bot_client = bot_client
+        self.bot = bot
 
-        options = [discord.SelectOption(label=g, value=g, emoji="💥") for g in groups[:25]]
-        select = discord.ui.Select(placeholder="...", options=options)
+        options = [discord.SelectOption(label=g, value=g) for g in groups[:25]]
+        select = discord.ui.Select(placeholder="削除するグループを選択してください...", min_values=1, max_values=1, options=options)
         select.callback = self.select_callback
         self.add_item(select)
 
     async def select_callback(self, interaction: discord.Interaction):
-        group_name = interaction.data["values"][0]
-        delete_group(self.guild_id, group_name)
+        selected_group = interaction.data['values'][0]
+        delete_group_channel(self.guild_id, selected_group)
 
-        map_text = build_group_map_text(self.guild_id, self.locale, self.bot_client)
-        success_msg = get_text(str(self.locale), 'group_deleted').format(name=group_name)
-        new_view = SetGroupOpView(self.guild_id, self.locale, self.bot_client)
-        msg = f"{map_text}\n\n{success_msg}\n\n{get_text(str(self.locale), 'menu_prompt')}"
-        await interaction.response.edit_message(content=msg, view=new_view)
+        map_text = build_group_map_text(self.guild_id, self.locale, self.bot)
+        msg = f"🗑️ グループ【 {selected_group} 】を削除しました。\n\n{map_text}"
+        await interaction.response.edit_message(content=msg, view=None)
