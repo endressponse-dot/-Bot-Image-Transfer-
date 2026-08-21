@@ -301,19 +301,20 @@ async def send_language_menu(interaction: discord.Interaction, guild_id: int, lo
         await interaction.response.send_message(content=msg, view=view, ephemeral=True)
 
 # ==========================================
-# 🛠️ UIパーツ（/set_group フロー - 完全チャンネル選択式）
+# 🛠️ UIパーツ（/set_group フロー - 連続操作・終了ボタン対応）
 # ==========================================
 
 class SetGroupOpView(discord.ui.View):
     def __init__(self, guild_id: int, locale: discord.Locale):
-        super().__init__(timeout=60)
+        super().__init__(timeout=180) # 連続操作を考慮してタイムアウトを3分に延長
         self.guild_id = guild_id
         self.locale = locale
 
         self.add_btn.label = get_text(str(locale), "btn_add")
         self.del_btn.label = get_text(str(locale), "btn_del")
+        self.close_btn.label = "メニューを閉じる" # 終了用ボタン
 
-    @discord.ui.button(style=discord.ButtonStyle.primary, emoji="✏️", custom_id="add_btn")
+    @discord.ui.button(style=discord.ButtonStyle.primary, emoji="✏️", custom_id="add_btn", row=0)
     async def add_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
@@ -326,7 +327,7 @@ class SetGroupOpView(discord.ui.View):
         msg = f"{map_text}\n\n{get_text(str(self.locale), 'select_edit_group')}"
         await interaction.response.edit_message(content=msg, view=view)
 
-    @discord.ui.button(style=discord.ButtonStyle.danger, emoji="🗑️", custom_id="del_btn")
+    @discord.ui.button(style=discord.ButtonStyle.danger, emoji="🗑️", custom_id="del_btn", row=0)
     async def del_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
@@ -336,7 +337,7 @@ class SetGroupOpView(discord.ui.View):
 
         if not groups:
             map_text = build_group_map_text(self.guild_id, self.locale)
-            await interaction.response.edit_message(content=map_text, view=None)
+            await interaction.response.edit_message(content=map_text, view=self)
             return
 
         view = GroupSelectForDeleteView(self.guild_id, groups, self.locale)
@@ -344,9 +345,14 @@ class SetGroupOpView(discord.ui.View):
         msg = f"{map_text}\n\n{get_text(str(self.locale), 'select_del_group')}"
         await interaction.response.edit_message(content=msg, view=view)
 
+    @discord.ui.button(style=discord.ButtonStyle.secondary, emoji="✖️", custom_id="close_btn", row=1)
+    async def close_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        map_text = build_group_map_text(self.guild_id, self.locale)
+        await interaction.response.edit_message(content=f"{map_text}\n\n🔒 設定メニューを終了しました。", view=None)
+
 class GroupSelectForEditView(discord.ui.View):
     def __init__(self, guild_id: int, groups: list, locale: discord.Locale):
-        super().__init__(timeout=60)
+        super().__init__(timeout=180)
         self.guild_id = guild_id
         self.locale = locale
 
@@ -362,6 +368,10 @@ class GroupSelectForEditView(discord.ui.View):
         if selected == "__NEW__":
             modal = NewGroupModal(self.guild_id, self.locale)
             await interaction.response.send_modal(modal)
+            # モダンのポップアップ後に元のメッセージをメインメニューに戻す
+            map_text = build_group_map_text(self.guild_id, self.locale)
+            view = SetGroupOpView(self.guild_id, self.locale)
+            await interaction.message.edit(content=f"{map_text}\n\n{get_text(str(self.locale), 'menu_prompt')}", view=view)
         else:
             view = AddTypeTargetView(self.guild_id, selected, self.locale)
             map_text = build_group_map_text(self.guild_id, self.locale)
@@ -389,7 +399,7 @@ class NewGroupModal(discord.ui.Modal):
 
 class NewGroupChannelSelectView(discord.ui.View):
     def __init__(self, guild_id: int, group_name: str, locale: discord.Locale):
-        super().__init__(timeout=120)
+        super().__init__(timeout=180)
         self.guild_id = guild_id
         self.group_name = group_name
         self.locale = locale
@@ -433,13 +443,16 @@ class NewGroupChannelSelectView(discord.ui.View):
         conn.commit()
         conn.close()
 
+        # 保存完了後、メインメニューと最新マップを再描画して継続操作できるようにする
         map_text = build_group_map_text(self.guild_id, self.locale)
-        msg = f"{map_text}\n\n{get_text(str(self.locale), 'created_msg').format(name=self.group_name)}"
-        await interaction.response.edit_message(content=msg, view=None)
+        success_msg = get_text(str(self.locale), 'created_msg').format(name=self.group_name)
+        new_view = SetGroupOpView(self.guild_id, self.locale)
+        msg = f"{map_text}\n\n{success_msg}\n\n{get_text(str(self.locale), 'menu_prompt')}"
+        await interaction.response.edit_message(content=msg, view=new_view)
 
 class AddTypeTargetView(discord.ui.View):
     def __init__(self, guild_id: int, group_name: str, locale: discord.Locale):
-        super().__init__(timeout=120)
+        super().__init__(timeout=180)
         self.guild_id = guild_id
         self.group_name = group_name
         self.locale = locale
@@ -459,7 +472,7 @@ class AddTypeTargetView(discord.ui.View):
 
 class ChannelAddSelectView(discord.ui.View):
     def __init__(self, guild_id: int, group_name: str, channel_type: str, locale: discord.Locale):
-        super().__init__(timeout=120)
+        super().__init__(timeout=180)
         self.guild_id = guild_id
         self.group_name = group_name
         self.channel_type = channel_type
@@ -488,13 +501,16 @@ class ChannelAddSelectView(discord.ui.View):
         c_mention = chan.mention if chan else f"ID:{cid}"
         t_label = get_text(str(self.locale), "source" if self.channel_type == "source" else "dest")
 
+        # 追加完了後、メインメニューと最新マップに戻して継続操作できるようにする
         map_text = build_group_map_text(self.guild_id, self.locale)
-        msg = f"{map_text}\n\n{get_text(str(self.locale), 'added_msg').format(name=self.group_name, type=t_label, channel=c_mention)}"
-        await interaction.response.edit_message(content=msg, view=None)
+        success_msg = get_text(str(self.locale), 'added_msg').format(name=self.group_name, type=t_label, channel=c_mention)
+        new_view = SetGroupOpView(self.guild_id, self.locale)
+        msg = f"{map_text}\n\n{success_msg}\n\n{get_text(str(self.locale), 'menu_prompt')}"
+        await interaction.response.edit_message(content=msg, view=new_view)
 
 class GroupSelectForDeleteView(discord.ui.View):
     def __init__(self, guild_id: int, groups: list, locale: discord.Locale):
-        super().__init__(timeout=60)
+        super().__init__(timeout=180)
         self.guild_id = guild_id
         self.locale = locale
 
@@ -512,9 +528,12 @@ class GroupSelectForDeleteView(discord.ui.View):
         conn.commit()
         conn.close()
 
+        # 削除完了後、メインメニューと最新マップに戻して継続操作できるようにする
         map_text = build_group_map_text(self.guild_id, self.locale)
-        msg = f"{map_text}\n\n{get_text(str(self.locale), 'group_deleted').format(name=group_name)}"
-        await interaction.response.edit_message(content=msg, view=None)
+        success_msg = get_text(str(self.locale), 'group_deleted').format(name=group_name)
+        new_view = SetGroupOpView(self.guild_id, self.locale)
+        msg = f"{map_text}\n\n{success_msg}\n\n{get_text(str(self.locale), 'menu_prompt')}"
+        await interaction.response.edit_message(content=msg, view=new_view)
 
 # ==========================================
 # 🚀 スラッシュコマンド
@@ -604,7 +623,6 @@ async def on_message(message):
         server_locale_str = str(message.guild.preferred_locale)
         actual_main = main_lang_code if main_lang_code != "default" else server_locale_str.split('-')[0].lower()
         
-        # 🔗 タイトル：リンクを付与し、不要な文字列を削除してシンプルに
         title_text = get_text(actual_main, "embed_title")
         jump_url = message.jump_url
         
