@@ -1,13 +1,10 @@
 import sqlite3
 import discord
-from discord import app_commands
 from config import DB_FILE
 from locales import get_text
 from database import build_group_map_text, add_group_channel, delete_group_channel, set_group_description
+from ui_retention import RetentionSelectView
 
-# ==========================================
-# 1. 操作選択メニュー（確認・編集・削除）
-# ==========================================
 class SetGroupOpView(discord.ui.View):
     def __init__(self, guild_id: int, locale: discord.Locale, bot: discord.Client):
         super().__init__(timeout=180)
@@ -31,7 +28,7 @@ class SetGroupOpView(discord.ui.View):
             msg = get_text(str(self.locale), "select_group_to_edit")
             await interaction.response.send_message(msg, view=view, ephemeral=True)
 
-    @discord.ui.button(label="🗑️ グループ単位削除", style=discord.ButtonStyle.danger, custom_id="grp_delete")
+    @discord.ui.button(label="🗑️ グループ削除", style=discord.ButtonStyle.danger, custom_id="grp_delete")
     async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
@@ -48,9 +45,6 @@ class SetGroupOpView(discord.ui.View):
         await interaction.response.send_message(msg, view=view, ephemeral=True)
 
 
-# ==========================================
-# 2. 編集用グループ選択ドロップダウン
-# ==========================================
 class GroupSelectForEditView(discord.ui.View):
     def __init__(self, guild_id: int, locale: discord.Locale, bot: discord.Client, groups: list):
         super().__init__(timeout=180)
@@ -58,7 +52,7 @@ class GroupSelectForEditView(discord.ui.View):
         self.locale = locale
         self.bot = bot
 
-        options = [discord.SelectOption(label=g, value=g) for g in groups[:25]]
+        options = [discord.SelectOption(label=g, value=g) for g in groups[:24]]
         options.append(discord.SelectOption(label="＋ 新しいグループを作成", value="__NEW__", description="新しくグループ名を指定して作成します"))
 
         select = discord.ui.Select(placeholder="グループを選択してください...", min_values=1, max_values=1, options=options)
@@ -74,13 +68,10 @@ class GroupSelectForEditView(discord.ui.View):
         else:
             view = EditGroupDetailView(self.guild_id, self.locale, self.bot, selected_value)
             map_text = build_group_map_text(self.guild_id, self.locale, self.bot)
-            msg = f"{map_text}\n\n【 {selected_value} 】の設定を変更中:"
+            msg = f"{map_text}\n\n【 **{selected_value}** 】の設定を変更中:"
             await interaction.response.edit_message(content=msg, view=view)
 
 
-# ==========================================
-# 3. 新規グループ名入力モーダル
-# ==========================================
 class GroupNameModal(discord.ui.Modal):
     def __init__(self, guild_id: int, locale: discord.Locale, bot: discord.Client):
         super().__init__(title="グループ新規作成")
@@ -100,13 +91,10 @@ class GroupNameModal(discord.ui.Modal):
         group_name = self.group_name_input.value.strip()
         view = EditGroupDetailView(self.guild_id, self.locale, self.bot, group_name)
         map_text = build_group_map_text(self.guild_id, self.locale, self.bot)
-        msg = f"{map_text}\n\n【 {group_name} 】の設定編集:"
+        msg = f"{map_text}\n\n【 **{group_name}** 】の設定編集:"
         await interaction.response.send_message(msg, view=view, ephemeral=True)
 
 
-# ==========================================
-# 4. グループ詳細設定（転送元・先・メモ変更）
-# ==========================================
 class EditGroupDetailView(discord.ui.View):
     def __init__(self, guild_id: int, locale: discord.Locale, bot: discord.Client, group_name: str):
         super().__init__(timeout=180)
@@ -115,18 +103,18 @@ class EditGroupDetailView(discord.ui.View):
         self.bot = bot
         self.group_name = group_name
 
-        # 転送元チャンネル選択
+        # 転送元選択
         src_select = discord.ui.ChannelSelect(
-            placeholder="転送元(Source) チャンネルを選択",
+            placeholder="転送元 (Source) チャンネルを選択",
             channel_types=[discord.ChannelType.text, discord.ChannelType.news, discord.ChannelType.public_thread, discord.ChannelType.private_thread],
             min_values=0, max_values=1, custom_id="select_src"
         )
         src_select.callback = self.src_callback
         self.add_item(src_select)
 
-        # 転送先チャンネル選択
+        # 転送先選択
         dest_select = discord.ui.ChannelSelect(
-            placeholder="転送先(Destination) チャンネルを選択",
+            placeholder="転送先 (Destination) チャンネルを選択",
             channel_types=[discord.ChannelType.text, discord.ChannelType.news, discord.ChannelType.public_thread, discord.ChannelType.private_thread],
             min_values=0, max_values=1, custom_id="select_dest"
         )
@@ -140,7 +128,7 @@ class EditGroupDetailView(discord.ui.View):
             add_group_channel(self.guild_id, self.group_name, ch_id, "source")
         
         map_text = build_group_map_text(self.guild_id, self.locale, self.bot)
-        await interaction.response.edit_message(content=f"{map_text}\n\n【 {self.group_name} 】の設定を変更しました。", view=self)
+        await interaction.response.edit_message(content=f"{map_text}\n\n【 **{self.group_name}** 】の設定を変更しました。", view=self)
 
     async def dest_callback(self, interaction: discord.Interaction):
         selected_channels = interaction.data.get('values', [])
@@ -149,17 +137,20 @@ class EditGroupDetailView(discord.ui.View):
             add_group_channel(self.guild_id, self.group_name, ch_id, "dest")
 
         map_text = build_group_map_text(self.guild_id, self.locale, self.bot)
-        await interaction.response.edit_message(content=f"{map_text}\n\n【 {self.group_name} 】の設定を変更しました。", view=self)
+        await interaction.response.edit_message(content=f"{map_text}\n\n【 **{self.group_name}** 】の設定を変更しました。", view=self)
 
-    @discord.ui.button(label="📝 メモを追加/変更", style=discord.ButtonStyle.secondary, custom_id="btn_desc")
+    @discord.ui.button(label="⏳ 保持日数（自動削除）設定", style=discord.ButtonStyle.primary, custom_id="btn_retention")
+    async def retention_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = RetentionSelectView(self.guild_id, self.group_name, self.locale, self.bot)
+        msg = get_text(str(self.locale), "retention_prompt")
+        await interaction.response.send_message(msg, view=view, ephemeral=True)
+
+    @discord.ui.button(label="📝 メモを変更", style=discord.ButtonStyle.secondary, custom_id="btn_desc")
     async def desc_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = GroupDescModal(self.guild_id, self.group_name, self.locale, self.bot)
         await interaction.response.send_modal(modal)
 
 
-# ==========================================
-# 5. グループ説明（メモ）入力モーダル
-# ==========================================
 class GroupDescModal(discord.ui.Modal):
     def __init__(self, guild_id: int, group_name: str, locale: discord.Locale, bot: discord.Client):
         super().__init__(title=f"【{group_name}】のメモ編集")
@@ -179,14 +170,10 @@ class GroupDescModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         desc = self.desc_input.value.strip()
         set_group_description(self.guild_id, self.group_name, desc)
-        
         map_text = build_group_map_text(self.guild_id, self.locale, self.bot)
         await interaction.response.send_message(f"メモを更新しました！\n\n{map_text}", ephemeral=True)
 
 
-# ==========================================
-# 6. 削除用グループ選択ドロップダウン
-# ==========================================
 class GroupSelectForDeleteView(discord.ui.View):
     def __init__(self, guild_id: int, locale: discord.Locale, bot: discord.Client, groups: list):
         super().__init__(timeout=180)
@@ -204,5 +191,5 @@ class GroupSelectForDeleteView(discord.ui.View):
         delete_group_channel(self.guild_id, selected_group)
 
         map_text = build_group_map_text(self.guild_id, self.locale, self.bot)
-        msg = f"🗑️ グループ【 {selected_group} 】を削除しました。\n\n{map_text}"
+        msg = f"🗑️ グループ【 **{selected_group}** 】を削除しました。\n\n{map_text}"
         await interaction.response.edit_message(content=msg, view=None)
