@@ -1,17 +1,15 @@
-import sqlite3
 import discord
-from config import DB_FILE, DEFAULT_DELETE_AFTER_DAYS
 from locales import get_text
 from database import (
     add_group_channel, 
     delete_group_channel, 
     set_group_retention_days, 
-    get_group_retention_days,
-    build_group_map_text
+    build_group_map_text,
+    get_all_group_names  # database.py に DB 取得処理を集約することを想定
 )
 
 # ==========================================
-# 1. 操作選択メニュー（確認・編集・削除）
+# 1. 操作選択メニュー（保持期間・チャンネル選択）
 # ==========================================
 
 class RetentionSelect(discord.ui.Select):
@@ -52,10 +50,10 @@ class GroupChannelSelectView(discord.ui.View):
             channel_types=[
                 discord.ChannelType.text,           # テキストチャンネル
                 discord.ChannelType.forum,          # フォーラムチャンネル
-                discord.ChannelType.public_thread,   # 公開スレッド
-                discord.ChannelType.private_thread,  # 非公開スレッド
-                discord.ChannelType.news,            # アナウンスチャンネル
-                discord.ChannelType.news_thread      # アナウンススレッド
+                discord.ChannelType.public_thread,  # 公開スレッド
+                discord.ChannelType.private_thread, # 非公開スレッド
+                discord.ChannelType.news,           # アナウンスチャンネル
+                discord.ChannelType.news_thread     # アナウンススレッド
             ],
             min_values=1,
             max_values=1
@@ -189,13 +187,8 @@ class OperationSelectView(discord.ui.View):
 
     @discord.ui.button(label="⚙️ グループ編集・追加", style=discord.ButtonStyle.primary, row=0)
     async def edit_group(self, interaction: discord.Interaction, button: discord.ui.Button):
-        conn = sqlite3.connect(DB_FILE)
-        c = conn.cursor()
-        c.execute('SELECT DISTINCT group_name FROM group_channels WHERE guild_id = ?', (self.guild_id,))
-        rows = c.fetchall()
-        conn.close()
+        existing_groups = get_all_group_names(self.guild_id)
         
-        existing_groups = [r[0] for r in rows]
         view = discord.ui.View()
         view.add_item(GroupSelectMenu(self.guild_id, existing_groups, self.locale))
         
@@ -204,13 +197,8 @@ class OperationSelectView(discord.ui.View):
 
     @discord.ui.button(label="🗑️ グループ削除", style=discord.ButtonStyle.danger, row=0)
     async def delete_group_menu(self, interaction: discord.Interaction, button: discord.ui.Button):
-        conn = sqlite3.connect(DB_FILE)
-        c = conn.cursor()
-        c.execute('SELECT DISTINCT group_name FROM group_channels WHERE guild_id = ?', (self.guild_id,))
-        rows = c.fetchall()
-        conn.close()
+        existing_groups = get_all_group_names(self.guild_id)
         
-        existing_groups = [r[0] for r in rows]
         if not existing_groups:
             await interaction.response.send_message("❌ 削除できるグループが存在しません。", ephemeral=True)
             return
@@ -226,13 +214,7 @@ class GroupManageMainView(discord.ui.View):
     def __init__(self, guild_id: int, locale):
         super().__init__(timeout=180)
         
-        conn = sqlite3.connect(DB_FILE)
-        c = conn.cursor()
-        c.execute('SELECT DISTINCT group_name FROM group_channels WHERE guild_id = ?', (guild_id,))
-        rows = c.fetchall()
-        conn.close()
-        
-        existing_groups = [r[0] for r in rows]
+        existing_groups = get_all_group_names(guild_id)
         self.add_item(GroupSelectMenu(guild_id, existing_groups, locale))
 
 
