@@ -1,6 +1,7 @@
 import sqlite3
 import discord
 from config import DB_FILE, DEFAULT_DELETE_AFTER_DAYS
+from locales import get_text
 
 # ==========================================
 # 1. データベース初期化
@@ -82,10 +83,10 @@ def build_group_map_text(guild_id: int, locale, bot) -> str:
     lines = [f"🌐 **サーバー言語設定**: メイン: `{main_lang}` / サブ: `{sub_langs}`\n"]
 
     if not groups:
-        lines.append("📋 **現在の転送設定**: なし")
+        lines.append(f"📋 **{get_text(locale, 'group_settings_title')}**: {get_text(locale, 'no_groups_configured')}")
         return "\n".join(lines)
 
-    lines.append("📋 **現在のグループ設定一覧**:")
+    lines.append(f"📋 **{get_text(locale, 'group_settings_title')}**:")
     for g_name, data in groups.items():
         desc = settings_map.get(g_name, {}).get("desc", "")
         days = settings_map.get(g_name, {}).get("days", DEFAULT_DELETE_AFTER_DAYS)
