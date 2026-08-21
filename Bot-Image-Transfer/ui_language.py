@@ -8,12 +8,13 @@ class LanguageSelectView(discord.ui.View):
         super().__init__(timeout=180)
         self.guild_id = guild_id
 
-        # 国旗マップからドロップダウンの選択肢（SelectOption）を生成
+        # LANG_MAPから12言語の選択肢（SelectOption）を自動生成
         main_opts = []
         for code, (flag, name_local, name_en) in LANG_MAP.items():
             label = f"{flag} {name_local} ({name_en})"
             main_opts.append(discord.SelectOption(label=label, value=code, emoji=flag))
 
+        # 自動判別の選択肢を先頭に追加
         main_opts.insert(0, discord.SelectOption(
             label="🌐 自動 (Discordのサーバー設定に従う)",
             value="default",
