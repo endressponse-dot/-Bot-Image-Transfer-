@@ -5,7 +5,7 @@ from database import (
     delete_group_channel, 
     set_group_retention_days, 
     build_group_map_text,
-    get_all_group_names  # database.py に DB 取得処理を集約することを想定
+    get_all_group_names
 )
 
 # ==========================================
@@ -62,7 +62,13 @@ class GroupChannelSelectView(discord.ui.View):
         self.add_item(channel_select)
 
     async def channel_select_callback(self, interaction: discord.Interaction):
-        selected_channel_id = interaction.data['values'][0]
+        # 安全に選択された値を取得
+        values = interaction.data.get('values', [])
+        if not values:
+            await interaction.response.send_message("❌ チャンネルの取得に失敗しました。", ephemeral=True)
+            return
+
+        selected_channel_id = values[0]
         ch_type = "src" if self.action_type == "add_src" else "dest"
         
         add_group_channel(self.guild_id, self.group_name, int(selected_channel_id), ch_type)
@@ -208,14 +214,6 @@ class OperationSelectView(discord.ui.View):
         
         prompt_text = get_text(self.locale, "select_group_to_delete")
         await interaction.response.send_message(prompt_text, view=view, ephemeral=True)
-
-
-class GroupManageMainView(discord.ui.View):
-    def __init__(self, guild_id: int, locale):
-        super().__init__(timeout=180)
-        
-        existing_groups = get_all_group_names(guild_id)
-        self.add_item(GroupSelectMenu(guild_id, existing_groups, locale))
 
 
 async def send_group_management_menu(interaction: discord.Interaction, guild_id: int, locale):
