@@ -138,6 +138,7 @@ LOCALES = {
 }
 
 def get_text(locale_str: str, key: str) -> str:
+    """ロケール文字列から前方一致で一致する辞書を取得し文言を返却する（フォールバック付き）"""
     lang = str(locale_str).split("-")[0].lower()
     if "zh" in lang:
         lang = "zh-TW" if "tw" in str(locale_str).lower() or "hk" in str(locale_str).lower() else "zh-CN"
