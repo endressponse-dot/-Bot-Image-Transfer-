@@ -604,7 +604,9 @@ async def on_message(message):
         server_locale_str = str(message.guild.preferred_locale)
         actual_main = main_lang_code if main_lang_code != "default" else server_locale_str.split('-')[0].lower()
         
+        # 🔗 タイトル：リンクを付与し、不要な文字列を削除してシンプルに
         title_text = get_text(actual_main, "embed_title")
+        jump_url = message.jump_url
         
         desc_lines = []
         main_desc = get_text(actual_main, "embed_desc").format(
@@ -628,7 +630,6 @@ async def on_message(message):
         for dest_id in dest_ids:
             dest_channel = bot.get_channel(dest_id)
             if dest_channel:
-                jump_url = message.jump_url
                 for att in image_attachments:
                     file = await att.to_file()
                     embed = discord.Embed(
