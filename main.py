@@ -61,8 +61,9 @@ def init_db():
 init_db()
 
 # ==========================================
-# 🌐 多言語ローカライズ用テキスト辞書
+# 🌐 多言語ローカライズ用テキスト辞書 & 定義
 # ==========================================
+
 TEXTS = {
     "ja": {
         "map_title": "🗺️ **現在の全体マップ:**",
@@ -632,24 +633,17 @@ class SubLangSelectView(discord.ui.View):
         options = [discord.SelectOption(label="🚫 サブ言語なし (クリア)", value="none", description="追加の言語表示をオフにします")]
         options.extend([discord.SelectOption(label=f"{label}", value=code) for code, label in LANG_MAP.items()])
         
-        # Discordのセレクトメニューは何も選ばないと送信できないため、「サブ言語なし」を含める
         select = discord.ui.Select(placeholder="サブ言語を選択（複数選択可）", min_values=1, max_values=len(LANG_MAP), options=options[:25])
         select.callback = self.select_callback
         self.add_item(select)
 
     async def select_callback(self, interaction: discord.Interaction):
         selected_langs = interaction.data["values"]
-        if "none" in selected_langs:
-            sub_langs_str = ""
-        else:
-            sub_langs_str = ",".join(selected_langs)
+        sub_langs_str = "" if "none" in selected_langs else ",".join(selected_langs)
 
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
-        c.execute('''
-            INSERT INTO guild_languages (guild_id, sub_langs) 
-            VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET sub_langs = ?
-        ''', (self.guild_id, sub_langs_str, sub_langs_str))
+        c.execute('INSERT INTO guild_languages (guild_id, sub_langs) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET sub_langs = ?', (self.guild_id, sub_langs_str, sub_langs_str))
         conn.commit()
         conn.close()
 
@@ -681,7 +675,7 @@ async def send_language_menu(interaction: discord.Interaction, guild_id: int, lo
         await interaction.response.send_message(content=msg, view=view, ephemeral=True)
 
 # ==========================================
-# 🛠️ UIパーツ（/set_group フロー）
+# 🛠️ UIパーツ（/set_group フロー - 完全チャンネル選択式）
 # ==========================================
 
 class SetGroupOpView(discord.ui.View):
@@ -724,7 +718,6 @@ class SetGroupOpView(discord.ui.View):
         msg = f"{map_text}\n\n{get_text(str(self.locale), 'select_del_group')}"
         await interaction.response.edit_message(content=msg, view=view)
 
-
 class GroupSelectForEditView(discord.ui.View):
     def __init__(self, guild_id: int, groups: list, locale: discord.Locale):
         super().__init__(timeout=60)
@@ -732,7 +725,6 @@ class GroupSelectForEditView(discord.ui.View):
         self.locale = locale
 
         options = [discord.SelectOption(label=get_text(str(locale), "new_group_option"), value="__NEW__", emoji="➕")]
-        # Max 25 個の制約に収めるためグループ数は最大 24 個に絞り込み
         options.extend([discord.SelectOption(label=g, value=g, emoji="📁") for g in groups[:24]])
 
         select = discord.ui.Select(placeholder="...", options=options)
@@ -750,7 +742,6 @@ class GroupSelectForEditView(discord.ui.View):
             msg = f"{map_text}\n\n{get_text(str(self.locale), 'select_target_type').format(name=selected)}"
             await interaction.response.edit_message(content=msg, view=view)
 
-
 class NewGroupModal(discord.ui.Modal):
     def __init__(self, guild_id: int, locale: discord.Locale):
         super().__init__(title=get_text(str(locale), "modal_new_title"))
@@ -762,47 +753,68 @@ class NewGroupModal(discord.ui.Modal):
             placeholder="Ex: Group-A",
             required=True
         )
-        self.source_id_input = discord.ui.TextInput(
-            label=get_text(str(locale), "modal_src_label"),
-            placeholder="Ex: 123456789...",
-            required=True
-        )
-        self.dest_id_input = discord.ui.TextInput(
-            label=get_text(str(locale), "modal_dest_label"),
-            placeholder="Ex: 987654321...",
-            required=True
-        )
         self.add_item(self.group_name_input)
-        self.add_item(self.source_id_input)
-        self.add_item(self.dest_id_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         gname = self.group_name_input.value.strip()
-        try:
-            src_id = int(self.source_id_input.value.strip())
-            dest_id = int(self.dest_id_input.value.strip())
-        except ValueError:
-            await interaction.response.send_message(get_text(str(self.locale), "invalid_id"), ephemeral=True)
+        view = NewGroupChannelSelectView(self.guild_id, gname, self.locale)
+        msg = f"📁 **[{gname}]** の転送元（📥）と転送先（📤）チャンネルを選択してください。"
+        await interaction.response.defer()
+        await interaction.message.edit(content=msg, view=view)
+
+class NewGroupChannelSelectView(discord.ui.View):
+    def __init__(self, guild_id: int, group_name: str, locale: discord.Locale):
+        super().__init__(timeout=120)
+        self.guild_id = guild_id
+        self.group_name = group_name
+        self.locale = locale
+        self.selected_src = None
+        self.selected_dest = None
+
+        self.src_select = discord.ui.ChannelSelect(
+            placeholder="📥 転送元チャンネルを選択...",
+            channel_types=[discord.ChannelType.text, discord.ChannelType.news, discord.ChannelType.forum],
+            min_values=1, max_values=1
+        )
+        self.src_select.callback = self.src_callback
+        self.add_item(self.src_select)
+
+        self.dest_select = discord.ui.ChannelSelect(
+            placeholder="📤 転送先チャンネルを選択...",
+            channel_types=[discord.ChannelType.text, discord.ChannelType.news],
+            min_values=1, max_values=1
+        )
+        self.dest_select.callback = self.dest_callback
+        self.add_item(self.dest_select)
+
+    async def src_callback(self, interaction: discord.Interaction):
+        self.selected_src = self.src_select.values[0].id
+        await interaction.response.defer()
+
+    async def dest_callback(self, interaction: discord.Interaction):
+        self.selected_dest = self.dest_select.values[0].id
+        await interaction.response.defer()
+
+    @discord.ui.button(label="保存する", style=discord.ButtonStyle.success, emoji="💾", row=2)
+    async def save_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.selected_src or not self.selected_dest:
+            await interaction.response.send_message("転送元と転送先を両方選択してください。", ephemeral=True)
             return
 
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
-        c.execute('INSERT OR REPLACE INTO group_channels VALUES (?, ?, ?, "source")', (self.guild_id, gname, src_id))
-        c.execute('INSERT OR REPLACE INTO group_channels VALUES (?, ?, ?, "dest")', (self.guild_id, gname, dest_id))
+        c.execute('INSERT OR REPLACE INTO group_channels VALUES (?, ?, ?, "source")', (self.guild_id, self.group_name, self.selected_src))
+        c.execute('INSERT OR REPLACE INTO group_channels VALUES (?, ?, ?, "dest")', (self.guild_id, self.group_name, self.selected_dest))
         conn.commit()
         conn.close()
 
         map_text = build_group_map_text(self.guild_id, self.locale)
-        msg = f"{map_text}\n\n{get_text(str(self.locale), 'created_msg').format(name=gname)}"
-        
-        # Modal 応答時は defer して元のメッセージを編集するのが安全
-        await interaction.response.defer()
-        await interaction.message.edit(content=msg, view=None)
-
+        msg = f"{map_text}\n\n{get_text(str(self.locale), 'created_msg').format(name=self.group_name)}"
+        await interaction.response.edit_message(content=msg, view=None)
 
 class AddTypeTargetView(discord.ui.View):
     def __init__(self, guild_id: int, group_name: str, locale: discord.Locale):
-        super().__init__(timeout=60)
+        super().__init__(timeout=120)
         self.guild_id = guild_id
         self.group_name = group_name
         self.locale = locale
@@ -812,38 +824,34 @@ class AddTypeTargetView(discord.ui.View):
 
     @discord.ui.button(style=discord.ButtonStyle.primary, emoji="📥", custom_id="src_btn")
     async def src_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = ChannelAddModal(self.guild_id, self.group_name, "source", self.locale)
-        await interaction.response.send_modal(modal)
+        view = ChannelAddSelectView(self.guild_id, self.group_name, "source", self.locale)
+        await interaction.response.edit_message(content=f"📁 **[{self.group_name}]** に追加する 📥 転送元チャンネルを選択してください:", view=view)
 
     @discord.ui.button(style=discord.ButtonStyle.success, emoji="📤", custom_id="dest_btn")
     async def dest_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = ChannelAddModal(self.guild_id, self.group_name, "dest", self.locale)
-        await interaction.response.send_modal(modal)
+        view = ChannelAddSelectView(self.guild_id, self.group_name, "dest", self.locale)
+        await interaction.response.edit_message(content=f"📁 **[{self.group_name}]** に追加する 📤 転送先チャンネルを選択してください:", view=view)
 
-
-class ChannelAddModal(discord.ui.Modal):
+class ChannelAddSelectView(discord.ui.View):
     def __init__(self, guild_id: int, group_name: str, channel_type: str, locale: discord.Locale):
-        t_label = get_text(str(locale), "source" if channel_type == "source" else "dest")
-        super().__init__(title=get_text(str(locale), "modal_add_title").format(type=t_label))
-        
+        super().__init__(timeout=120)
         self.guild_id = guild_id
         self.group_name = group_name
         self.channel_type = channel_type
         self.locale = locale
 
-        self.cid_input = discord.ui.TextInput(
-            label=get_text(str(locale), "modal_cid_label"),
-            placeholder="Ex: 123456789...",
-            required=True
+        c_types = [discord.ChannelType.text, discord.ChannelType.news, discord.ChannelType.forum] if channel_type == "source" else [discord.ChannelType.text, discord.ChannelType.news]
+        
+        self.chan_select = discord.ui.ChannelSelect(
+            placeholder="チャンネルを選択...",
+            channel_types=c_types,
+            min_values=1, max_values=1
         )
-        self.add_item(self.cid_input)
+        self.chan_select.callback = self.select_callback
+        self.add_item(self.chan_select)
 
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            cid = int(self.cid_input.value.strip())
-        except ValueError:
-            await interaction.response.send_message(get_text(str(self.locale), "invalid_id"), ephemeral=True)
-            return
+    async def select_callback(self, interaction: discord.Interaction):
+        cid = self.chan_select.values[0].id
 
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
@@ -851,17 +859,13 @@ class ChannelAddModal(discord.ui.Modal):
         conn.commit()
         conn.close()
 
-        chan = interaction.client.get_channel(cid)
+        chan = bot.get_channel(cid)
         c_mention = chan.mention if chan else f"ID:{cid}"
         t_label = get_text(str(self.locale), "source" if self.channel_type == "source" else "dest")
 
         map_text = build_group_map_text(self.guild_id, self.locale)
         msg = f"{map_text}\n\n{get_text(str(self.locale), 'added_msg').format(name=self.group_name, type=t_label, channel=c_mention)}"
-        
-        # Modal 応答時は defer して元のメッセージを編集
-        await interaction.response.defer()
-        await interaction.message.edit(content=msg, view=None)
-
+        await interaction.response.edit_message(content=msg, view=None)
 
 class GroupSelectForDeleteView(discord.ui.View):
     def __init__(self, guild_id: int, groups: list, locale: discord.Locale):
@@ -869,7 +873,6 @@ class GroupSelectForDeleteView(discord.ui.View):
         self.guild_id = guild_id
         self.locale = locale
 
-        # 最大 25 個の制限を適用
         options = [discord.SelectOption(label=g, value=g, emoji="💥") for g in groups[:25]]
         select = discord.ui.Select(placeholder="...", options=options)
         select.callback = self.select_callback
@@ -972,17 +975,12 @@ async def on_message(message):
     conn.close()
 
     if image_attachments and dest_ids:
-        # DBから言語設定を取得
         main_lang_code, sub_langs_str = get_guild_language_setting(message.guild.id)
-        
-        # 実際のメイン言語を決定
         server_locale_str = str(message.guild.preferred_locale)
         actual_main = main_lang_code if main_lang_code != "default" else server_locale_str.split('-')[0].lower()
         
-        # メイン言語によるタイトル生成
         title_text = get_text(actual_main, "embed_title")
         
-        # メイン言語の説明文生成
         desc_lines = []
         main_desc = get_text(actual_main, "embed_desc").format(
             author=message.author.display_name,
@@ -990,7 +988,6 @@ async def on_message(message):
         )
         desc_lines.append(main_desc)
         
-        # サブ言語の説明文を追加（設定されている場合）
         if sub_langs_str:
             sub_langs = sub_langs_str.split(',')
             for sl in sub_langs:
@@ -999,7 +996,6 @@ async def on_message(message):
                         author=message.author.display_name,
                         channel=channel.name
                     )
-                    # メイン言語の下に並べて表示
                     desc_lines.append(sl_desc)
 
         final_desc = "\n\n".join(desc_lines)
