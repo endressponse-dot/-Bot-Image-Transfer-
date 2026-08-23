@@ -66,6 +66,19 @@ def init_db():
             forwarded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    # 自動昇格メッセージ・作成されたスレッドの記録用テーブル
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS promoted_messages (
+            original_message_id INTEGER PRIMARY KEY,
+            promoted_message_id INTEGER,
+            thread_id INTEGER,
+            guild_id INTEGER,
+            group_name TEXT,
+            promoted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
     conn.commit()
     conn.close()
 
@@ -317,3 +330,53 @@ def record_forwarded_message(original_message_id: int, guild_id: int, group_name
     ''', (original_message_id, guild_id, group_name))
     conn.commit()
     conn.close()
+
+
+# ==========================================
+# 8. 昇格メッセージ・スレッド履歴管理関数
+# ==========================================
+
+def is_message_promoted(original_message_id: int) -> bool:
+    """
+    メッセージがすでに昇格（画展等へ転送）済みかチェックします。
+    """
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('SELECT 1 FROM promoted_messages WHERE original_message_id = ?', (original_message_id,))
+    row = c.fetchone()
+    conn.close()
+    return row is not None
+
+def record_promoted_message(original_message_id: int, promoted_message_id: int, thread_id: int, guild_id: int, group_name: str):
+    """
+    昇格処理を行ったメッセージID、転送先メッセージID、作成したスレッドIDを記録します。
+    """
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
+        INSERT OR REPLACE INTO promoted_messages (original_message_id, promoted_message_id, thread_id, guild_id, group_name)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (original_message_id, promoted_message_id, thread_id, guild_id, group_name))
+    conn.commit()
+    conn.close()
+
+def get_promoted_message_info(original_message_id: int) -> dict | None:
+    """
+    元のメッセージIDから、昇格先メッセージIDやスレッドIDを取得します。
+    """
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
+        SELECT promoted_message_id, thread_id, group_name 
+        FROM promoted_messages 
+        WHERE original_message_id = ?
+    ''', (original_message_id,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return {
+            "promoted_message_id": row[0],
+            "thread_id": row[1],
+            "group_name": row[2]
+        }
+    return None
