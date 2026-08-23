@@ -17,20 +17,42 @@ intents.message_content = True
 intents.guilds = True
 intents.messages = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+class CustomBot(commands.Bot):
+    def __init__(self):
+        super().__init__(command_prefix="!", intents=intents)
+
+    async def setup_hook(self):
+        # 1. データベースの初期化
+        init_db()
+
+        # 2. Cogs の非同期ロード
+        try:
+            await self.load_extension("cogs.transfer")
+            print("Loaded extension: cogs.transfer")
+        except Exception as e:
+            print(f"Failed to load extension cogs.transfer: {e}")
+
+        try:
+            await self.load_extension("cogs.settings")
+            print("Loaded extension: cogs.settings")
+        except Exception as e:
+            print(f"Failed to load extension cogs.settings: {e}")
+
+        # 3. スラッシュコマンドの同期
+        try:
+            synced = await self.tree.sync()
+            print(f"Synced {len(synced)} command(s)")
+        except Exception as e:
+            print(f"Failed to sync commands: {e}")
+
+bot = CustomBot()
 
 # ---------------------------------------------------------
 # 初期化処理
 # ---------------------------------------------------------
 @bot.event
 async def on_ready():
-    init_db()
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
-    try:
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} command(s)")
-    except Exception as e:
-        print(f"Failed to sync commands: {e}")
     
     if not clean_old_messages.is_running():
         clean_old_messages.start()
