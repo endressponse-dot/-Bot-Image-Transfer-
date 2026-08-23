@@ -39,6 +39,27 @@ def init_db():
             sub_langs TEXT
         )
     ''')
+
+    # 自動昇格ルール（リアクション数による昇格閾値設定）
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS promotion_rules (
+            guild_id INTEGER,
+            group_name TEXT,
+            emoji TEXT,
+            threshold INTEGER,
+            PRIMARY KEY (guild_id, group_name, emoji)
+        )
+    ''')
+
+    # 二重転送防止・記録用（メッセージ転送履歴）
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS forwarded_messages (
+            original_message_id INTEGER PRIMARY KEY,
+            guild_id INTEGER,
+            group_name TEXT,
+            forwarded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -142,6 +163,7 @@ def delete_group_channel(guild_id: int, group_name: str):
     c = conn.cursor()
     c.execute('DELETE FROM group_channels WHERE guild_id = ? AND group_name = ?', (guild_id, group_name))
     c.execute('DELETE FROM group_settings WHERE guild_id = ? AND group_name = ?', (guild_id, group_name))
+    c.execute('DELETE FROM promotion_rules WHERE guild_id = ? AND group_name = ?', (guild_id, group_name))
     conn.commit()
     conn.close()
 
@@ -220,3 +242,72 @@ def get_guild_language_setting(guild_id: int):
         sub_langs = [s.strip() for s in row[1].split(",") if s.strip()] if row[1] else []
         return main_lang, sub_langs
     return "ja", []
+
+
+# ==========================================
+# 6. 自動昇格ルール管理関数
+# ==========================================
+
+def set_promotion_rule(guild_id: int, group_name: str, emoji: str, threshold: int):
+    """
+    指定されたグループに昇格用のリアクション絵文字と閾値を設定します。
+    """
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO promotion_rules (guild_id, group_name, emoji, threshold)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(guild_id, group_name, emoji) DO UPDATE SET threshold = excluded.threshold
+    ''', (guild_id, group_name, emoji, threshold))
+    conn.commit()
+    conn.close()
+
+def get_promotion_rules(guild_id: int, group_name: str) -> list[dict]:
+    """
+    グループに紐づく昇格ルールの一覧を取得します。
+    """
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('SELECT emoji, threshold FROM promotion_rules WHERE guild_id = ? AND group_name = ?', (guild_id, group_name))
+    rows = c.fetchall()
+    conn.close()
+    return [{"emoji": r[0], "threshold": r[1]} for r in rows]
+
+def remove_promotion_rule(guild_id: int, group_name: str, emoji: str):
+    """
+    指定された昇格ルールを削除します。
+    """
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('DELETE FROM promotion_rules WHERE guild_id = ? AND group_name = ? AND emoji = ?', (guild_id, group_name, emoji))
+    conn.commit()
+    conn.close()
+
+
+# ==========================================
+# 7. 二重転送防止（転送済みメッセージ記録）関数
+# ==========================================
+
+def is_message_forwarded(original_message_id: int) -> bool:
+    """
+    メッセージがすでに転送済みかどうかを確認します。
+    """
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('SELECT 1 FROM forwarded_messages WHERE original_message_id = ?', (original_message_id,))
+    row = c.fetchone()
+    conn.close()
+    return row is not None
+
+def record_forwarded_message(original_message_id: int, guild_id: int, group_name: str):
+    """
+    転送処理を実行したメッセージIDを記録して重複を防ぎます。
+    """
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
+        INSERT OR IGNORE INTO forwarded_messages (original_message_id, guild_id, group_name)
+        VALUES (?, ?, ?)
+    ''', (original_message_id, guild_id, group_name))
+    conn.commit()
+    conn.close()
