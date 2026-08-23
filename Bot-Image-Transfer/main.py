@@ -6,16 +6,25 @@ import discord
 from discord.ext import commands, tasks
 
 from config import DISCORD_BOT_TOKEN, DB_FILE, DEFAULT_DELETE_AFTER_DAYS
-from database import init_db, get_guild_language_setting, build_group_map_text
+from database import (
+    init_db, 
+    get_guild_language_setting, 
+    build_group_map_text,
+    is_message_forwarded,
+    record_forwarded_message,
+    is_message_promoted,
+    record_promoted_message
+)
 from ui_language import send_language_menu
 from ui_group import send_group_management_menu
 from keep_alive import keep_alive
 
-# 権限(Intents)の設定：スレッド・メッセージコンテンツ読み取りを確実に許可
+# 権限(Intents)の設定：スレッド・メッセージコンテンツ・リアクション読み取りを確実に許可
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
 intents.messages = True
+intents.reactions = True
 
 class CustomBot(commands.Bot):
     def __init__(self):
@@ -124,6 +133,11 @@ async def on_message(message: discord.Message):
     # 転送先(dest)へメッセージを構築して送信
     for row in src_rows:
         group_name = row[0]
+        
+        # 二重転送チェック
+        if is_message_forwarded(message.id):
+            continue
+
         c.execute('SELECT channel_id FROM group_channels WHERE guild_id = ? AND group_name = ? AND type = "dest"',
                   (message.guild.id, group_name))
         dest_rows = c.fetchall()
@@ -151,12 +165,120 @@ async def on_message(message: discord.Message):
                     img_embed = discord.Embed(color=discord.Color.blue())
                     img_embed.set_image(url=extra_url)
                     await dest_ch.send(embed=img_embed)
+                
+                # 転送済みとして記録
+                record_forwarded_message(message.id, message.guild.id, group_name)
 
     conn.close()
     await bot.process_commands(message)
 
 # ---------------------------------------------------------
-# 2. スラッシュコマンド群
+# 2. リアクションによる自動昇格＆スレッド作成イベント
+# ---------------------------------------------------------
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    if payload.user_id == bot.user.id or not payload.guild_id:
+        return
+
+    # すでに昇格済みメッセージであれば処理をスキップ
+    if is_message_promoted(payload.message_id):
+        return
+
+    channel = bot.get_channel(payload.channel_id)
+    if not channel:
+        return
+
+    try:
+        message = await channel.fetch_message(payload.message_id)
+    except Exception:
+        return
+
+    target_channel_id = channel.parent_id if isinstance(channel, discord.Thread) else channel.id
+
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+
+    # 該当チャンネルが属する転送元グループを取得
+    c.execute('SELECT group_name FROM group_channels WHERE guild_id = ? AND channel_id = ? AND type = "src"',
+              (payload.guild_id, target_channel_id))
+    src_rows = c.fetchall()
+
+    if not src_rows:
+        conn.close()
+        return
+
+    emoji_str = str(payload.emoji)
+
+    for row in src_rows:
+        group_name = row[0]
+        
+        # グループに設定されている昇格ルール（絵文字・閾値）を取得
+        c.execute('SELECT threshold FROM promotion_rules WHERE guild_id = ? AND group_name = ? AND emoji = ?',
+                  (payload.guild_id, group_name, emoji_str))
+        rule = c.fetchone()
+
+        if not rule:
+            continue
+
+        threshold = rule[0]
+
+        # 付与されたリアクションの件数を判定
+        reaction = discord.utils.get(message.reactions, emoji=payload.emoji.name if payload.emoji.is_custom_emoji() else payload.emoji.name)
+        count = reaction.count if reaction else 0
+
+        if count >= threshold:
+            # 転送先(dest)チャンネルを取得
+            c.execute('SELECT channel_id FROM group_channels WHERE guild_id = ? AND group_name = ? AND type = "dest"',
+                      (payload.guild_id, group_name))
+            dest_rows = c.fetchall()
+
+            image_urls = extract_image_urls(message)
+
+            for d_row in dest_rows:
+                dest_ch = message.guild.get_channel(d_row[0])
+                if dest_ch:
+                    channel_display_name = f"{channel.parent.name} > {channel.name}" if isinstance(channel, discord.Thread) else channel.name
+
+                    embed = discord.Embed(
+                        title="⭐ 殿堂入り作品（自動昇格）",
+                        description=f"### [🌟 元メッセージを見る]({message.jump_url})\n👤 作者: {message.author.mention} | 📍 チャンネル: **#{channel_display_name}**",
+                        color=discord.Color.gold()
+                    )
+
+                    if message.content:
+                        embed.add_field(name="💬 メッセージ", value=message.content, inline=False)
+
+                    if image_urls:
+                        embed.set_image(url=image_urls[0])
+
+                    # 転送先へ昇格メッセージを送信
+                    promoted_msg = await dest_ch.send(embed=embed)
+
+                    # 複数画像がある場合追加送信
+                    if len(image_urls) > 1:
+                        for extra_url in image_urls[1:]:
+                            img_embed = discord.Embed(color=discord.Color.gold())
+                            img_embed.set_image(url=extra_url)
+                            await dest_ch.send(embed=img_embed)
+
+                    # 感想・コメント用スレッドの自動作成
+                    thread_name = f"💬 感想・コメント: {message.author.display_name}の作品"
+                    thread = await promoted_msg.create_thread(name=thread_name[:100], auto_archive_duration=10080)
+
+                    # 昇格履歴と作成されたスレッドIDをDBに記録（重複昇格を防止）
+                    record_promoted_message(
+                        original_message_id=message.id,
+                        promoted_message_id=promoted_msg.id,
+                        thread_id=thread.id,
+                        guild_id=payload.guild_id,
+                        group_name=group_name
+                    )
+                    break
+
+    conn.close()
+
+# ---------------------------------------------------------
+# 3. スラッシュコマンド群
 # ---------------------------------------------------------
 @bot.tree.command(name="config", description="転送設定メニューを開きます")
 async def config_command(interaction: discord.Interaction):
@@ -180,7 +302,7 @@ async def list_command(interaction: discord.Interaction):
     await interaction.response.send_message(text, ephemeral=True)
 
 # ---------------------------------------------------------
-# 3. チャンネル全削除機能 (/clear_channel) - 連打防止対応
+# 4. チャンネル全削除機能 (/clear_channel) - 連打防止対応
 # ---------------------------------------------------------
 class ClearConfirmView(discord.ui.View):
     def __init__(self, locale):
@@ -233,7 +355,7 @@ async def clear_channel_command(interaction: discord.Interaction):
     await interaction.response.send_message(warn_text, view=view, ephemeral=True)
 
 # ---------------------------------------------------------
-# 4. 動的自動削除バックグラウンドタスク
+# 5. 動的自動削除バックグラウンドタスク
 # ---------------------------------------------------------
 @tasks.loop(hours=1)
 async def clean_old_messages():
