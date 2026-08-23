@@ -5,7 +5,9 @@ from database import (
     delete_group_channel, 
     set_group_retention_days, 
     build_group_map_text,
-    get_all_group_names
+    get_all_group_names,
+    set_promotion_rule,
+    get_promotion_rules
 )
 
 # ==========================================
@@ -108,7 +110,75 @@ class GroupChannelSelectView(discord.ui.View):
 
 
 # ==========================================
-# 2. グループ詳細操作・編集UI
+# 2. 自動昇格ルール設定 UI・モーダル
+# ==========================================
+
+class PromotionConfigModal(discord.ui.Modal, title="自動昇格ルールの設定"):
+    emoji_input = discord.ui.TextInput(
+        label="対象の絵文字 (リアクション)",
+        placeholder="例: ⭐ や :star:",
+        required=True,
+        max_length=50
+    )
+    threshold_input = discord.ui.TextInput(
+        label="昇格に必要なリアクション数",
+        placeholder="例: 5",
+        required=True,
+        max_length=5
+    )
+
+    def __init__(self, guild_id: int, group_name: str, locale):
+        super().__init__()
+        self.guild_id = guild_id
+        self.group_name = group_name
+        self.locale = locale
+
+    async def on_submit(self, interaction: discord.Interaction):
+        emoji_str = self.emoji_input.value.strip()
+        try:
+            threshold = int(self.threshold_input.value.strip())
+            if threshold <= 0:
+                raise ValueError()
+        except ValueError:
+            await interaction.response.send_message("❌ リアクション数は1以上の数値を入力してください。", ephemeral=True)
+            return
+
+        set_promotion_rule(self.guild_id, self.group_name, emoji_str, threshold)
+
+        view = PromotionSetupView(self.guild_id, self.group_name, self.locale, interaction.client)
+        rules = get_promotion_rules(self.guild_id, self.group_name)
+        rules_str = "\n".join([f"• {r['emoji']} : {r['threshold']}個" for r in rules]) if rules else "設定なし"
+
+        await interaction.response.edit_message(
+            content=f"✅ グループ **{self.group_name}** に昇格ルールを追加しました。\n\n**【現在の設定一覧】**\n{rules_str}",
+            view=view
+        )
+
+
+class PromotionSetupView(discord.ui.View):
+    def __init__(self, guild_id: int, group_name: str, locale, bot):
+        super().__init__(timeout=180)
+        self.guild_id = guild_id
+        self.group_name = group_name
+        self.locale = locale
+        self.bot = bot
+
+    @discord.ui.button(label="➕ ルールを追加/更新", style=discord.ButtonStyle.primary, row=0)
+    async def add_rule(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = PromotionConfigModal(self.guild_id, self.group_name, self.locale)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="🔙 グループ編集に戻る", style=discord.ButtonStyle.secondary, row=0)
+    async def back_to_group(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = GroupActionView(self.guild_id, self.group_name, self.locale, self.bot)
+        await interaction.response.edit_message(
+            content=f"⚙️ グループ **{self.group_name}** の設定・編集を行います。操作を選択してください:",
+            view=view
+        )
+
+
+# ==========================================
+# 3. グループ詳細操作・編集UI
 # ==========================================
 
 class GroupActionView(discord.ui.View):
@@ -135,6 +205,17 @@ class GroupActionView(discord.ui.View):
         view = GroupChannelSelectView(self.guild_id, self.group_name, "add_dest", self.locale, interaction.client)
         await interaction.response.edit_message(content="📤 転送先に指定するチャンネルまたはスレッドを選択してください:", view=view)
 
+    @discord.ui.button(label="⭐ 自動昇格設定", style=discord.ButtonStyle.secondary, row=1)
+    async def config_promotion(self, interaction: discord.Interaction, button: discord.ui.Button):
+        rules = get_promotion_rules(self.guild_id, self.group_name)
+        rules_str = "\n".join([f"• {r['emoji']} : {r['threshold']}個" for r in rules]) if rules else "設定なし"
+        
+        view = PromotionSetupView(self.guild_id, self.group_name, self.locale, interaction.client)
+        await interaction.response.edit_message(
+            content=f"⭐ **グループ: {self.group_name}** の自動昇格ルール設定\n\n**【現在の設定一覧】**\n{rules_str}",
+            view=view
+        )
+
     @discord.ui.button(label="🗑️ このグループを削除", style=discord.ButtonStyle.danger, row=1)
     async def delete_group(self, interaction: discord.Interaction, button: discord.ui.Button):
         delete_group_channel(self.guild_id, self.group_name)
@@ -148,7 +229,7 @@ class GroupActionView(discord.ui.View):
 
 
 # ==========================================
-# 3. グループ選択・新規作成モーダル
+# 4. グループ選択・新規作成モーダル
 # ==========================================
 
 class NewGroupModal(discord.ui.Modal, title="新規グループ作成"):
@@ -220,7 +301,7 @@ class GroupDeleteSelectMenu(discord.ui.Select):
 
 
 # ==========================================
-# 4. トップレベル操作選択UI（Main Menu）
+# 5. トップレベル操作選択UI（Main Menu）
 # ==========================================
 
 class OperationSelectView(discord.ui.View):
