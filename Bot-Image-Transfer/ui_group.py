@@ -8,7 +8,7 @@ from database import (
     get_all_group_names,
     set_promotion_rule,
     get_promotion_rules,
-    delete_promotion_rule
+    remove_promotion_rule
 )
 
 # ==========================================
@@ -241,7 +241,7 @@ class RuleDeleteSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         selected_emoji = self.values[0]
-        delete_promotion_rule(self.guild_id, self.group_name, selected_emoji)
+        remove_promotion_rule(self.guild_id, self.group_name, selected_emoji)
 
         rules = get_promotion_rules(self.guild_id, self.group_name)
         rules_str = "\n".join([f"• {r['emoji']} : {r['threshold']}個" for r in rules]) if rules else "設定なし"
