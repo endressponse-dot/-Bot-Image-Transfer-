@@ -7,7 +7,8 @@ from database import (
     build_group_map_text,
     get_all_group_names,
     set_promotion_rule,
-    get_promotion_rules
+    get_promotion_rules,
+    delete_promotion_rule
 )
 
 # ==========================================
@@ -219,6 +220,39 @@ class CustomEmojiPromotionModal(discord.ui.Modal, title="手動入力でルー�
         )
 
 
+class RuleDeleteSelect(discord.ui.Select):
+    def __init__(self, guild_id: int, group_name: str, rules: list, locale):
+        self.guild_id = guild_id
+        self.group_name = group_name
+        self.locale = locale
+
+        options = [
+            discord.SelectOption(
+                label=f"{r['emoji']} (必要数: {r['threshold']}個)", 
+                value=r['emoji']
+            ) for r in rules
+        ]
+        super().__init__(
+            placeholder="削除する昇格ルールを選択してください...",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        selected_emoji = self.values[0]
+        delete_promotion_rule(self.guild_id, self.group_name, selected_emoji)
+
+        rules = get_promotion_rules(self.guild_id, self.group_name)
+        rules_str = "\n".join([f"• {r['emoji']} : {r['threshold']}個" for r in rules]) if rules else "設定なし"
+        view = PromotionSetupView(self.guild_id, self.group_name, self.locale, interaction.client)
+
+        await interaction.response.edit_message(
+            content=f"🗑️ 昇格ルール（{selected_emoji}）を削除しました。\n\n**【現在の設定一覧】**\n{rules_str}",
+            view=view
+        )
+
+
 class PromotionSetupView(discord.ui.View):
     def __init__(self, guild_id: int, group_name: str, locale, bot):
         super().__init__(timeout=180)
@@ -234,6 +268,31 @@ class PromotionSetupView(discord.ui.View):
     async def add_custom_rule(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = CustomEmojiPromotionModal(self.guild_id, self.group_name, self.locale)
         await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="🗑️ ルールを削除", style=discord.ButtonStyle.danger, row=1)
+    async def delete_rule_menu(self, interaction: discord.Interaction, button: discord.ui.Button):
+        rules = get_promotion_rules(self.guild_id, self.group_name)
+        if not rules:
+            await interaction.response.send_message("❌ 削除できる昇格ルールが存在しません。", ephemeral=True, delete_after=5)
+            return
+
+        view = discord.ui.View()
+        view.add_item(RuleDeleteSelect(self.guild_id, self.group_name, rules, self.locale))
+        
+        # 戻るボタン
+        back_btn = discord.ui.Button(label="🔙 昇格設定に戻る", style=discord.ButtonStyle.secondary)
+        async def back_callback(back_interaction: discord.Interaction):
+            rules_now = get_promotion_rules(self.guild_id, self.group_name)
+            rules_str_now = "\n".join([f"• {r['emoji']} : {r['threshold']}個" for r in rules_now]) if rules_now else "設定なし"
+            setup_view = PromotionSetupView(self.guild_id, self.group_name, self.locale, self.bot)
+            await back_interaction.response.edit_message(
+                content=f"⭐ **グループ: {self.group_name}** の自動昇格ルール設定\n\n**【現在の設定一覧】**\n{rules_str_now}",
+                view=setup_view
+            )
+        back_btn.callback = back_callback
+        view.add_item(back_btn)
+
+        await interaction.response.edit_message(content="🗑️ **削除するルールを選択してください:**", view=view)
 
     @discord.ui.button(label="🔙 グループ編集に戻る", style=discord.ButtonStyle.secondary, row=1)
     async def back_to_group(self, interaction: discord.Interaction, button: discord.ui.Button):
