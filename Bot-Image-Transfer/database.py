@@ -51,6 +51,12 @@ def init_db():
         )
     ''')
 
+    # 既存DBへの安全策：promotion_rules に emoji カラムが存在しない古い構造の場合、自動追加
+    c.execute("PRAGMA table_info(promotion_rules)")
+    columns = [column[1] for column in c.fetchall()]
+    if columns and "emoji" not in columns:
+        c.execute("ALTER TABLE promotion_rules ADD COLUMN emoji TEXT DEFAULT '⭐'")
+
     # 二重転送防止・記録用（メッセージ転送履歴）
     c.execute('''
         CREATE TABLE IF NOT EXISTS forwarded_messages (
