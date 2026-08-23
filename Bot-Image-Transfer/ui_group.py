@@ -113,10 +113,74 @@ class GroupChannelSelectView(discord.ui.View):
 # 2. 自動昇格ルール設定 UI・モーダル
 # ==========================================
 
-class PromotionConfigModal(discord.ui.Modal, title="自動昇格ルールの設定"):
+class EmojiSelect(discord.ui.Select):
+    def __init__(self, guild_id: int, group_name: str, locale):
+        self.guild_id = guild_id
+        self.group_name = group_name
+        self.locale = locale
+
+        options = [
+            discord.SelectOption(label="⭐ 星 (Star)", value="⭐", emoji="⭐"),
+            discord.SelectOption(label="❤️ ハート (Heart)", value="❤️", emoji="❤️"),
+            discord.SelectOption(label="🔥 炎 (Fire)", value="🔥", emoji="🔥"),
+            discord.SelectOption(label="👍 グッド (Thumbs Up)", value="👍", emoji="👍"),
+            discord.SelectOption(label="👏 拍手 (Clap)", value="👏", emoji="👏"),
+            discord.SelectOption(label="🎉 クラッカー (Tada)", value="🎉", emoji="🎉"),
+        ]
+        super().__init__(
+            placeholder="使用する絵文字を選択してください...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        selected_emoji = self.values[0]
+        modal = PromotionThresholdModal(self.guild_id, self.group_name, selected_emoji, self.locale)
+        await interaction.response.send_modal(modal)
+
+
+class PromotionThresholdModal(discord.ui.Modal):
+    threshold_input = discord.ui.TextInput(
+        label="昇格に必要なリアクション数",
+        placeholder="例: 5",
+        required=True,
+        max_length=5
+    )
+
+    def __init__(self, guild_id: int, group_name: str, emoji_str: str, locale):
+        super().__init__(title=f"「{emoji_str}」の必要リアクション数設定")
+        self.guild_id = guild_id
+        self.group_name = group_name
+        self.emoji_str = emoji_str
+        self.locale = locale
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            threshold = int(self.threshold_input.value.strip())
+            if threshold <= 0:
+                raise ValueError()
+        except ValueError:
+            await interaction.response.send_message("❌ リアクション数は1以上の数値を入力してください。", ephemeral=True)
+            return
+
+        set_promotion_rule(self.guild_id, self.group_name, self.emoji_str, threshold)
+
+        view = PromotionSetupView(self.guild_id, self.group_name, self.locale, interaction.client)
+        rules = get_promotion_rules(self.guild_id, self.group_name)
+        rules_str = "\n".join([f"• {r['emoji']} : {r['threshold']}個" for r in rules]) if rules else "設定なし"
+
+        await interaction.response.edit_message(
+            content=f"✅ グループ **{self.group_name}** に昇格ルール（{self.emoji_str} × {threshold}個）を設定しました。\n\n**【現在の設定一覧】**\n{rules_str}",
+            view=view
+        )
+
+
+class CustomEmojiPromotionModal(discord.ui.Modal, title="手動入力でルールを追加"):
     emoji_input = discord.ui.TextInput(
-        label="対象の絵文字 (リアクション)",
-        placeholder="例: ⭐ や :star:",
+        label="対象の絵文字 (絵文字またはカスタム絵文字)",
+        placeholder="例: ⭐ や :custom_emoji:",
         required=True,
         max_length=50
     )
@@ -163,12 +227,15 @@ class PromotionSetupView(discord.ui.View):
         self.locale = locale
         self.bot = bot
 
-    @discord.ui.button(label="➕ ルールを追加/更新", style=discord.ButtonStyle.primary, row=0)
-    async def add_rule(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = PromotionConfigModal(self.guild_id, self.group_name, self.locale)
+        # 絵文字選択ドロップダウンの追加
+        self.add_item(EmojiSelect(guild_id, group_name, locale))
+
+    @discord.ui.button(label="✏️ その他の絵文字を入力", style=discord.ButtonStyle.primary, row=1)
+    async def add_custom_rule(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = CustomEmojiPromotionModal(self.guild_id, self.group_name, self.locale)
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="🔙 グループ編集に戻る", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="🔙 グループ編集に戻る", style=discord.ButtonStyle.secondary, row=1)
     async def back_to_group(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = GroupActionView(self.guild_id, self.group_name, self.locale, self.bot)
         await interaction.response.edit_message(
