@@ -8,18 +8,22 @@ from discord.ext import commands, tasks
 from config import DISCORD_BOT_TOKEN, DB_FILE, DEFAULT_DELETE_AFTER_DAYS
 from database import (
     init_db, 
+    get_guild_language_setting, 
+    build_group_map_text,
     is_message_forwarded,
     record_forwarded_message,
     is_message_promoted,
     record_promoted_message,
     get_all_group_names
 )
+from ui_language import send_language_menu
+from ui_group import send_group_management_menu
 from keep_alive import keep_alive
 
-# ダッシュボードモジュールの読み込み
+# ダッシュボード機能およびモーダルの読み込み
 from ui_dashboard import create_dashboard_embed, RuleDashboardView, CreateGroupModal
 
-# 権限(Intents)の設定
+# 権限(Intents)の設定：スレッド・メッセージコンテンツ・リアクション読み取りを確実に許可
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
@@ -31,9 +35,23 @@ class CustomBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
-        # データベースの初期化・自動マイグレーション
+        # 1. データベースの初期化
         init_db()
 
+        # 2. Cogs の非同期ロード
+        try:
+            await self.load_extension("cogs.transfer")
+            print("Loaded extension: cogs.transfer")
+        except Exception as e:
+            print(f"Failed to load extension cogs.transfer: {e}")
+
+        try:
+            await self.load_extension("cogs.settings")
+            print("Loaded extension: cogs.settings")
+        except Exception as e:
+            print(f"Failed to load extension cogs.settings: {e}")
+
+        # 3. スラッシュコマンドの同期
         try:
             synced = await self.tree.sync()
             print(f"Synced {len(synced)} command(s)")
@@ -74,14 +92,13 @@ def extract_image_urls(message: discord.Message) -> list[str]:
     return urls
 
 # ---------------------------------------------------------
-# 1. 転送メッセージ処理（ダッシュボード設定を即時反映）
+# 1. 転送メッセージ処理（通常チャンネル & フォーラム・スレッド対応）
 # ---------------------------------------------------------
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
 
-    # スレッドからの投稿対応
     if isinstance(message.channel, discord.Thread):
         target_channel_id = message.channel.parent_id
         is_thread = True
@@ -89,10 +106,15 @@ async def on_message(message: discord.Message):
         target_channel_id = message.channel.id
         is_thread = False
 
+    image_urls = extract_image_urls(message)
+
+    if not image_urls:
+        await bot.process_commands(message)
+        return
+
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     
-    # 送信元(src)として登録されているグループを取得
     c.execute('SELECT group_name FROM group_channels WHERE guild_id = ? AND channel_id = ? AND type = "src"',
               (message.guild.id, target_channel_id))
     src_rows = c.fetchall()
@@ -102,29 +124,12 @@ async def on_message(message: discord.Message):
         await bot.process_commands(message)
         return
 
-    image_urls = extract_image_urls(message)
-    has_image = len(image_urls) > 0
-    has_text = bool(message.content and message.content.strip())
-
     for row in src_rows:
         group_name = row[0]
         
         if is_message_forwarded(message.id):
             continue
 
-        # グループの転送対象コンテンツ設定を取得
-        c.execute('SELECT target_content FROM group_settings WHERE guild_id = ? AND group_name = ?',
-                  (message.guild.id, group_name))
-        setting_row = c.fetchone()
-        target_content = setting_row[0] if setting_row and setting_row[0] else "all"
-
-        # フィルタリング判定
-        if target_content == "image_only" and not has_image:
-            continue
-        if target_content == "text_only" and not has_text:
-            continue
-
-        # 転送先(dest)チャンネルの取得
         c.execute('SELECT channel_id FROM group_channels WHERE guild_id = ? AND group_name = ? AND type = "dest"',
                   (message.guild.id, group_name))
         dest_rows = c.fetchall()
@@ -136,24 +141,20 @@ async def on_message(message: discord.Message):
                 
                 embed = discord.Embed(
                     title="",
-                    description=f"### [💬 転送メッセージ]({message.jump_url})\n👤 投稿者: {message.author.mention} | 📍 チャンネル: **#{channel_display_name}**",
+                    description=f"### [📷 画像が共有されました]({message.jump_url})\n👤 投稿者: {message.author.mention} | 📍 チャンネル: **#{channel_display_name}**",
                     color=discord.Color.blue()
                 )
                 
                 if message.content:
                     embed.add_field(name="💬 メッセージ", value=message.content, inline=False)
                 
-                if has_image:
-                    embed.set_image(url=image_urls[0])
-                
+                embed.set_image(url=image_urls[0])
                 await dest_ch.send(embed=embed)
                 
-                # 複数画像がある場合の追加Embed送信
-                if len(image_urls) > 1:
-                    for extra_url in image_urls[1:]:
-                        img_embed = discord.Embed(color=discord.Color.blue())
-                        img_embed.set_image(url=extra_url)
-                        await dest_ch.send(embed=img_embed)
+                for extra_url in image_urls[1:]:
+                    img_embed = discord.Embed(color=discord.Color.blue())
+                    img_embed.set_image(url=extra_url)
+                    await dest_ch.send(embed=img_embed)
                 
                 record_forwarded_message(message.id, message.guild.id, group_name)
 
@@ -206,8 +207,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
             continue
 
         threshold = rule[0]
-
-        reaction = discord.utils.get(message.reactions, emoji=payload.emoji.name if payload.emoji.is_custom_emoji() else payload.emoji.name)
+        reaction = discord.utils.get(message.reactions, emoji=payload.emoji.name if payload.emoji.is_customemoji() else payload.emoji.name)
         count = reaction.count if reaction else 0
 
         if count >= threshold:
@@ -257,28 +257,22 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     conn.close()
 
 # ---------------------------------------------------------
-# 3. ダッシュボード起動UIクラス
+# 3. ダッシュボード起動用UIクラス
 # ---------------------------------------------------------
 class DashboardGroupSelect(discord.ui.Select):
     def __init__(self, guild_id: int, groups: list):
         self.guild_id = guild_id
-        options = [discord.SelectOption(label="➕ 新しいグループを作成...", value="__CREATE_NEW__")]
-        for g in groups:
-            options.append(discord.SelectOption(label=f"⚙️ {g}", value=g))
-            
-        super().__init__(placeholder="グループを選択または新規作成...", min_values=1, max_values=1, options=options)
+        options = [discord.SelectOption(label=f"⚙️ {g}", value=g) for g in groups]
+        super().__init__(placeholder="設定するグループを選択してください...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
-        val = self.values[0]
-        if val == "__CREATE_NEW__":
-            await interaction.response.send_modal(CreateGroupModal())
-        else:
-            embed = create_dashboard_embed(self.guild_id, val)
-            view = RuleDashboardView(self.guild_id, val)
-            await interaction.response.edit_message(content=None, embed=embed, view=view)
+        group_name = self.values[0]
+        embed = create_dashboard_embed(self.guild_id, group_name)
+        view = RuleDashboardView(self.guild_id, group_name)
+        await interaction.response.edit_message(content=None, embed=embed, view=view)
 
 # ---------------------------------------------------------
-# 4. スラッシュコマンド（統合管理用 /setup）
+# 4. スラッシュコマンド群
 # ---------------------------------------------------------
 @bot.tree.command(name="setup", description="一画面設定ダッシュボードを開きます（管理者専用）")
 async def setup_command(interaction: discord.Interaction):
@@ -289,24 +283,54 @@ async def setup_command(interaction: discord.Interaction):
     guild_id = interaction.guild_id
     existing_groups = get_all_group_names(guild_id)
     
-    view = discord.ui.View()
-    view.add_item(DashboardGroupSelect(guild_id, existing_groups))
-    await interaction.response.send_message("📁 **管理するグループを選択するか、新規作成してください:**", view=view, ephemeral=True)
+    if not existing_groups:
+        # グループが一つも無い場合は直接モーダルを開いて新規作成へ誘導
+        await interaction.response.send_modal(CreateGroupModal())
+    else:
+        view = discord.ui.View()
+        view.add_item(DashboardGroupSelect(guild_id, existing_groups))
+        await interaction.response.send_message("📁 **ダッシュボードを開くグループを選択してください:**", view=view, ephemeral=True)
+
+@bot.tree.command(name="config", description="従来の転送設定メニューを開きます")
+async def config_command(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ このコマンドは管理者専用です。", ephemeral=True)
+        return
+    
+    await send_group_management_menu(interaction, interaction.guild_id, interaction.locale)
+
+@bot.tree.command(name="language", description="言語設定を変更します")
+async def language_command(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ このコマンドは管理者専用です。", ephemeral=True)
+        return
+    
+    await send_language_menu(interaction, interaction.guild_id, interaction.locale)
+
+@bot.tree.command(name="list", description="現在の設定一覧を表示します")
+async def list_command(interaction: discord.Interaction):
+    text = build_group_map_text(interaction.guild_id, interaction.locale)
+    await interaction.response.send_message(text, ephemeral=True)
 
 # ---------------------------------------------------------
 # 5. チャンネル全削除機能 (/clear_channel)
 # ---------------------------------------------------------
 class ClearConfirmView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, locale):
         super().__init__(timeout=60)
+        self.locale = locale
 
     @discord.ui.button(label="🗑️ 実行する", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(content="⏳ メッセージ削除処理を実行中です...", view=None)
+        await interaction.response.edit_message(
+            content="⏳ メッセージ削除処理を実行中です...", 
+            view=None
+        )
         
         channel = interaction.channel
         now = datetime.now(timezone.utc)
         fourteen_days_ago = now - timedelta(days=14)
+        
         deleted_count = 0
         
         try:
@@ -335,7 +359,7 @@ async def clear_channel_command(interaction: discord.Interaction):
         return
     
     warn_text = "⚠️ **警告**: このチャンネルの過去メッセージを削除します。よろしいですか？"
-    view = ClearConfirmView()
+    view = ClearConfirmView(interaction.locale)
     await interaction.response.send_message(warn_text, view=view, ephemeral=True)
 
 # ---------------------------------------------------------
