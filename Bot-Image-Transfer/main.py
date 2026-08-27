@@ -1,190 +1,228 @@
-import os
-import asyncio
-import sqlite3
-from datetime import datetime, timezone, timedelta
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
+import sqlite3
+import datetime
+import re
 
-from config import DISCORD_BOT_TOKEN, DB_FILE, DEFAULT_DELETE_AFTER_DAYS
+# モジュールインポート
+from config import TOKEN, DB_FILE
 from database import (
-    init_db, 
-    get_guild_language_setting, 
+    init_db,
     build_group_map_text,
-    is_message_forwarded,
-    record_forwarded_message,
+    get_guild_language_setting,
+    get_promotion_rules,
     is_message_promoted,
-    record_promoted_message
+    record_promoted_message,
+    get_group_retention_days
 )
-from ui_language import send_language_menu
-from ui_group import send_group_management_menu
-from keep_alive import keep_alive
+from translator import translate_text, translate_image
+from ui_group import GroupActionView, OperationSelectView
+from ui_promotion import PromotionRuleView
 
-# 権限(Intents)の設定：スレッド・メッセージコンテンツ・リアクション読み取りを確実に許可
+# Discord Botの準備 (インテント設定)
 intents = discord.Intents.default()
 intents.message_content = True
-intents.guilds = True
-intents.messages = True
 intents.reactions = True
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-class CustomBot(commands.Bot):
-    def __init__(self):
-        super().__init__(command_prefix="!", intents=intents)
 
-    async def setup_hook(self):
-        # 1. データベースの初期化
-        init_db()
-
-        # 2. Cogs の非同期ロード
-        try:
-            await self.load_extension("cogs.transfer")
-            print("Loaded extension: cogs.transfer")
-        except Exception as e:
-            print(f"Failed to load extension cogs.transfer: {e}")
-
-        try:
-            await self.load_extension("cogs.settings")
-            print("Loaded extension: cogs.settings")
-        except Exception as e:
-            print(f"Failed to load extension cogs.settings: {e}")
-
-        # 3. スラッシュコマンドの同期
-        try:
-            synced = await self.tree.sync()
-            print(f"Synced {len(synced)} command(s)")
-        except Exception as e:
-            print(f"Failed to sync commands: {e}")
-
-bot = CustomBot()
-
-# ---------------------------------------------------------
-# 初期化処理
-# ---------------------------------------------------------
+# ==========================================
+# 1. 起動時イベント
+# ==========================================
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    init_db()  # DBテーブル初期化
+    print(f"Logged in as {bot.user.name} (ID: {bot.user.id})")
     
-    if not clean_old_messages.is_running():
-        clean_old_messages.start()
+    try:
+        synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} command(s)")
+    except Exception as e:
+        print(f"Failed to sync commands: {e}")
 
-# ---------------------------------------------------------
-# 画像抽出ユーティリティ関数
-# ---------------------------------------------------------
-def extract_image_urls(message: discord.Message) -> list[str]:
-    """
-    メッセージの添付ファイルおよび埋め込み(Embed)から画像URLをすべて抽出します。
-    """
-    urls = []
-    # 添付ファイルのチェック
-    if message.attachments:
-        for att in message.attachments:
-            if att.content_type and att.content_type.startswith("image/"):
-                urls.append(att.url)
-            elif att.url.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
-                urls.append(att.url)
 
-    # 埋め込み(Embed)画像のチェック
-    if message.embeds:
-        for embed in message.embeds:
-            if embed.image and embed.image.url:
-                urls.append(embed.image.url)
-            elif embed.thumbnail and embed.thumbnail.url:
-                urls.append(embed.thumbnail.url)
+# ==========================================
+# 2. スラッシュコマンド群
+# ==========================================
 
-    return urls
+@bot.tree.command(name="setup", description="グループのチャンネル設定パネルを開きます")
+async def setup_command(interaction: discord.Interaction):
+    """ボタン群（作成・一覧・追加・削除・説明・保持）を表示するパネル"""
+    embed = discord.Embed(
+        title="⚙️ 転送グループ管理パネル",
+        description="以下のボタンから操作を選択してください。",
+        color=discord.Color.blue()
+    )
+    view = GroupActionView(interaction.guild_id, interaction.locale)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-# ---------------------------------------------------------
-# 1. 転送メッセージ処理（通常チャンネル & フォーラム・スレッド対応）
-# ---------------------------------------------------------
+
+@bot.tree.command(name="list", description="現在の設定一覧を表示します")
+async def list_command(interaction: discord.Interaction):
+    """現在登録されている設定一覧を表示します"""
+    text = build_group_map_text(interaction.guild_id, interaction.locale)
+    await interaction.response.send_message(text, ephemeral=True)
+
+
+@bot.tree.command(name="promotion", description="自動昇格（特定リアクションで別グループへ転送）ルールを設定します")
+async def promotion_command(interaction: discord.Interaction):
+    """自動昇格ルールの設定GUIを表示します"""
+    embed = discord.Embed(
+        title="⭐ 自動昇格ルールの設定",
+        description="特定グループのメッセージに指定リアクションが集まった際、指定の別グループへ自動昇格（転送＋スレッド作成）するルールを設定・管理します。",
+        color=discord.Color.gold()
+    )
+    view = PromotionRuleView(interaction.guild_id, interaction.locale)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+@bot.tree.command(name="ops", description="操作パネルを表示します")
+async def ops_command(interaction: discord.Interaction):
+    """ドロップダウン方式の操作パネルを表示します"""
+    embed = discord.Embed(
+        title="🛠️ Bot操作パネル",
+        description="実行したい操作を下のメニューから選択してください。",
+        color=discord.Color.green()
+    )
+    view = OperationSelectView(interaction.guild_id, interaction.locale)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+# ==========================================
+# 3. メッセージ転送＆自動翻訳イベント
+# ==========================================
 @bot.event
 async def on_message(message: discord.Message):
-    if message.author.bot or not message.guild:
+    # Bot自身のメッセージやWebhook等は無視
+    if message.author.bot:
         return
 
-    # フォーラム内のスレッド投稿か、通常のテキストチャンネルかを判定
-    # スレッドの場合は親チャンネル(フォーラム)のIDを取得
-    if isinstance(message.channel, discord.Thread):
-        target_channel_id = message.channel.parent_id
-        is_thread = True
-    else:
-        target_channel_id = message.channel.id
-        is_thread = False
-
-    # メッセージ（またはスレッドのスターターメッセージ）から画像URLを抽出
-    image_urls = extract_image_urls(message)
-
-    # 画像が含まれていない場合は処理を行わない
-    if not image_urls:
-        await bot.process_commands(message)
+    # ギルド外メッセージは無視
+    if not message.guild:
         return
 
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    
-    # 該当チャンネル（またはフォーラム親チャンネル）が転送元(src)か取得
-    c.execute('SELECT group_name FROM group_channels WHERE guild_id = ? AND channel_id = ? AND type = "src"',
-              (message.guild.id, target_channel_id))
+
+    # 1. 投稿されたチャンネルがどのグループの "src" (転送元) に指定されているか検索
+    c.execute('''
+        SELECT group_name FROM group_channels 
+        WHERE guild_id = ? AND channel_id = ? AND type = 'src'
+    ''', (message.guild.id, message.channel.id))
     src_rows = c.fetchall()
-    
+
     if not src_rows:
         conn.close()
-        await bot.process_commands(message)
         return
 
-    # 転送先(dest)へメッセージを構築して送信
+    # サーバーの言語設定を取得 (デフォルトはメイン:ja, サブ:[])
+    main_lang, sub_langs = get_guild_language_setting(message.guild.id)
+
+    # 該当するすべてのグループに対して処理
     for row in src_rows:
         group_name = row[0]
-        
-        # 二重転送チェック
-        if is_message_forwarded(message.id):
+
+        # 転送先 (dest) チャンネルを取得
+        c.execute('''
+            SELECT channel_id FROM group_channels 
+            WHERE guild_id = ? AND group_name = ? AND type = 'dest'
+        ''', (message.guild.id, group_name))
+        dest_rows = c.fetchall()
+
+        if not dest_rows:
             continue
 
-        c.execute('SELECT channel_id FROM group_channels WHERE guild_id = ? AND group_name = ? AND type = "dest"',
-                  (message.guild.id, group_name))
-        dest_rows = c.fetchall()
-        
-        for d_row in dest_rows:
-            dest_ch = message.guild.get_channel(d_row[0])
-            if dest_ch:
-                channel_display_name = f"{message.channel.parent.name} > {message.channel.name}" if is_thread else message.channel.name
-                
-                embed = discord.Embed(
-                    title="",
-                    description=f"### [📷 画像が共有されました]({message.jump_url})\n👤 投稿者: {message.author.mention} | 📍 チャンネル: **#{channel_display_name}**",
-                    color=discord.Color.blue()
-                )
-                
-                if message.content:
-                    embed.add_field(name="💬 メッセージ", value=message.content, inline=False)
-                
-                # 最初のアタッチメント画像をメインに設定
-                embed.set_image(url=image_urls[0])
-                await dest_ch.send(embed=embed)
-                
-                # 複数画像がある場合は追加で送信
-                for extra_url in image_urls[1:]:
-                    img_embed = discord.Embed(color=discord.Color.blue())
-                    img_embed.set_image(url=extra_url)
-                    await dest_ch.send(embed=img_embed)
-                
-                # 転送済みとして記録
-                record_forwarded_message(message.id, message.guild.id, group_name)
+        # 2. 保持期間の計算 (0なら期限なし)
+        days = get_group_retention_days(message.guild.id, group_name)
+        delete_at_str = ""
+        if days > 0:
+            expire_dt = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=days)
+            delete_at_str = f"\n🗑️ *保持期限: {expire_dt.strftime('%Y-%m-%d %H:%M UTC')} (自動削除予定)*"
+
+        # 3. 転送先チャンネルへ送るメッセージの組み立て
+        for (dest_ch_id,) in dest_rows:
+            dest_channel = message.guild.get_channel(dest_ch_id)
+            if not dest_channel:
+                continue
+
+            # ヘッダー情報
+            author_info = f"👤 **{message.author.display_name}** (`{message.author.name}`)"
+            origin_info = f"📍 元メッセージ: [移動する]({message.jump_url})"
+            header = f"{author_info} | {origin_info}{delete_at_str}\n"
+
+            # A. テキストの翻訳処理
+            translated_blocks = []
+
+            if message.content:
+                # メイン言語への翻訳
+                res_main = await translate_text(message.content, target_lang=main_lang)
+                if res_main and res_main.get("text"):
+                    translated_blocks.append(f"🌐 **[{main_lang.upper()}]**\n{res_main['text']}")
+
+                # サブ言語への翻訳
+                for s_lang in sub_langs:
+                    if s_lang.lower() == main_lang.lower():
+                        continue
+                    res_sub = await translate_text(message.content, target_lang=s_lang)
+                    if res_sub and res_sub.get("text"):
+                        translated_blocks.append(f"🔤 **[{s_lang.upper()}]**\n{res_sub['text']}")
+
+                # 翻訳結果が得られない、または言語判定でスキップされた場合は原文
+                if not translated_blocks:
+                    translated_blocks.append(f"📝 **原文**:\n{message.content}")
+            
+            content_payload = header + "\n\n".join(translated_blocks)
+
+            # B. 添付画像・ファイルの取得と画像内文字翻訳
+            files = []
+            image_ocr_texts = []
+
+            for attachment in message.attachments:
+                # ファイルを再転送用に取得
+                try:
+                    file_data = await attachment.to_file()
+                    files.append(file_data)
+                except Exception as e:
+                    print(f"Failed to fetch attachment file: {e}")
+
+                # 画像形式であればOCR・翻訳処理
+                if attachment.content_type and attachment.content_type.startswith("image/"):
+                    try:
+                        img_bytes = await attachment.read()
+                        ocr_res = await translate_image(img_bytes, target_lang=main_lang)
+                        if ocr_res and ocr_res.get("text"):
+                            image_ocr_texts.append(
+                                f"🖼️ **[画像翻訳: {attachment.filename}]** ({main_lang.upper()})\n{ocr_res['text']}"
+                            )
+                    except Exception as e:
+                        print(f"Failed image translation: {e}")
+
+            if image_ocr_texts:
+                content_payload += "\n\n" + "\n\n".join(image_ocr_texts)
+
+            # C. 転送実行
+            try:
+                await dest_channel.send(content=content_payload, files=files)
+            except Exception as e:
+                print(f"Error sending forwarded message to {dest_ch_id}: {e}")
 
     conn.close()
-    await bot.process_commands(message)
 
-# ---------------------------------------------------------
-# 2. リアクションによる自動昇格＆スレッド作成イベント
-# ---------------------------------------------------------
+
+# ==========================================
+# 4. リアクションによる自動昇格イベント
+# ==========================================
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
-    if payload.user_id == bot.user.id or not payload.guild_id:
+    # Bot自身のリアクションは無視
+    if payload.user_id == bot.user.id:
         return
 
-    # すでに昇格済みメッセージであれば処理をスキップ
-    if is_message_promoted(payload.message_id):
+    guild = bot.get_guild(payload.guild_id)
+    if not guild:
         return
 
-    channel = bot.get_channel(payload.channel_id)
+    channel = guild.get_channel(payload.channel_id)
     if not channel:
         return
 
@@ -193,216 +231,112 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     except Exception:
         return
 
-    target_channel_id = channel.parent_id if isinstance(channel, discord.Thread) else channel.id
+    # メッセージ送信者がBotの場合は無視
+    if message.author.bot:
+        return
 
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
 
-    # 該当チャンネルが属する転送元グループを取得
-    c.execute('SELECT group_name FROM group_channels WHERE guild_id = ? AND channel_id = ? AND type = "src"',
-              (payload.guild_id, target_channel_id))
-    src_rows = c.fetchall()
+    # 1. リアクションが押されたチャンネルが属するグループを特定
+    c.execute('''
+        SELECT group_name FROM group_channels 
+        WHERE guild_id = ? AND channel_id = ?
+    ''', (guild.id, channel.id))
+    rows = c.fetchall()
 
-    if not src_rows:
+    if not rows:
         conn.close()
         return
 
+    # リアクションされた絵文字表記の統一 (絵文字オブジェクト -> 文字列)
     emoji_str = str(payload.emoji)
 
-    for row in src_rows:
-        group_name = row[0]
-        
-        # グループに設定されている昇格ルール（絵文字・閾値）を取得
-        c.execute('SELECT threshold FROM promotion_rules WHERE guild_id = ? AND group_name = ? AND emoji = ?',
-                  (payload.guild_id, group_name, emoji_str))
-        rule = c.fetchone()
-
-        if not rule:
+    for (group_name,) in rows:
+        # 2. このグループに設定されている昇格ルールを取得
+        rules = get_promotion_rules(guild.id, group_name)
+        if not rules:
             continue
 
-        threshold = rule[0]
+        for rule in rules:
+            target_emoji = rule["emoji"]
+            threshold = rule["threshold"]
 
-        # 付与されたリアクションの件数を判定
-        reaction = discord.utils.get(message.reactions, emoji=payload.emoji.name if payload.emoji.is_custom_emoji() else payload.emoji.name)
-        count = reaction.count if reaction else 0
-
-        if count >= threshold:
-            # 転送先(dest)チャンネルを取得
-            c.execute('SELECT channel_id FROM group_channels WHERE guild_id = ? AND group_name = ? AND type = "dest"',
-                      (payload.guild_id, group_name))
-            dest_rows = c.fetchall()
-
-            image_urls = extract_image_urls(message)
-
-            for d_row in dest_rows:
-                dest_ch = message.guild.get_channel(d_row[0])
-                if dest_ch:
-                    channel_display_name = f"{channel.parent.name} > {channel.name}" if isinstance(channel, discord.Thread) else channel.name
-
-                    embed = discord.Embed(
-                        title="⭐ 殿堂入り作品（自動昇格）",
-                        description=f"### [🌟 元メッセージを見る]({message.jump_url})\n👤 作者: {message.author.mention} | 📍 チャンネル: **#{channel_display_name}**",
-                        color=discord.Color.gold()
-                    )
-
-                    if message.content:
-                        embed.add_field(name="💬 メッセージ", value=message.content, inline=False)
-
-                    if image_urls:
-                        embed.set_image(url=image_urls[0])
-
-                    # 転送先へ昇格メッセージを送信
-                    promoted_msg = await dest_ch.send(embed=embed)
-
-                    # 複数画像がある場合追加送信
-                    if len(image_urls) > 1:
-                        for extra_url in image_urls[1:]:
-                            img_embed = discord.Embed(color=discord.Color.gold())
-                            img_embed.set_image(url=extra_url)
-                            await dest_ch.send(embed=img_embed)
-
-                    # 感想・コメント用スレッドの自動作成
-                    thread_name = f"💬 感想・コメント: {message.author.display_name}の作品"
-                    thread = await promoted_msg.create_thread(name=thread_name[:100], auto_archive_duration=10080)
-
-                    # 昇格履歴と作成されたスレッドIDをDBに記録（重複昇格を防止）
-                    record_promoted_message(
-                        original_message_id=message.id,
-                        promoted_message_id=promoted_msg.id,
-                        thread_id=thread.id,
-                        guild_id=payload.guild_id,
-                        group_name=group_name
-                    )
-                    break
-
-    conn.close()
-
-# ---------------------------------------------------------
-# 3. スラッシュコマンド群
-# ---------------------------------------------------------
-@bot.tree.command(name="config", description="転送設定メニューを開きます")
-async def config_command(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ このコマンドは管理者専用です。", ephemeral=True)
-        return
-    
-    await send_group_management_menu(interaction, interaction.guild_id, interaction.locale)
-
-@bot.tree.command(name="language", description="言語設定を変更します")
-async def language_command(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ このコマンドは管理者専用です。", ephemeral=True)
-        return
-    
-    await send_language_menu(interaction, interaction.guild_id, interaction.locale)
-
-@bot.tree.command(name="list", description="現在の設定一覧を表示します")
-async def list_command(interaction: discord.Interaction):
-    text = build_group_map_text(interaction.guild_id, interaction.locale, bot)
-    await interaction.response.send_message(text, ephemeral=True)
-
-# ---------------------------------------------------------
-# 4. チャンネル全削除機能 (/clear_channel) - 連打防止対応
-# ---------------------------------------------------------
-class ClearConfirmView(discord.ui.View):
-    def __init__(self, locale):
-        super().__init__(timeout=60)
-        self.locale = locale
-
-    @discord.ui.button(label="🗑️ 実行する", style=discord.ButtonStyle.danger)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # ボタン連打防止：直ちにUI（ボタン）を無効化してメッセージを編集更新
-        await interaction.response.edit_message(
-            content="⏳ メッセージ削除処理を実行中です...", 
-            view=None
-        )
-        
-        channel = interaction.channel
-        now = datetime.now(timezone.utc)
-        fourteen_days_ago = now - timedelta(days=14)
-        
-        deleted_count = 0
-        
-        # 14日以内のメッセージは一括削除(purge)
-        try:
-            purged = await channel.purge(limit=1000, after=fourteen_days_ago)
-            deleted_count += len(purged)
-        except Exception as e:
-            print(f"Purge error: {e}")
-
-        # 14日以上経過した古いメッセージは個別に削除
-        try:
-            async for msg in channel.history(limit=1000, before=fourteen_days_ago):
-                try:
-                    await msg.delete()
-                    deleted_count += 1
-                    await asyncio.sleep(0.8)  # レートリミット回避のウェイト
-                except Exception:
-                    pass
-        except Exception as e:
-            print(f"History purge error: {e}")
+            # リアクションの絵文字がルールに合致するかチェック
+            if emoji_str == target_emoji:
+                # リアクション数のカウント
+                reaction_obj = discord.utils.get(message.reactions, emoji=payload.emoji.name if payload.emoji.is_custom_emoji() else payload.emoji.name)
                 
-        await interaction.followup.send(f"🧹 チャンネル内のメッセージを削除しました（計 {deleted_count} 通）。", ephemeral=True)
+                # パラメータ差異の吸収（オブジェクト直接検索）
+                count = 0
+                for r in message.reactions:
+                    if str(r.emoji) == emoji_str:
+                        count = r.count
+                        break
 
-@bot.tree.command(name="clear_channel", description="このチャンネル内のメッセージをすべて削除します（管理者専用）")
-async def clear_channel_command(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ このコマンドは管理者専用です。", ephemeral=True)
-        return
-    
-    warn_text = "⚠️ **警告**: このチャンネルの過去メッセージを削除します。よろしいですか？"
-    view = ClearConfirmView(interaction.locale)
-    await interaction.response.send_message(warn_text, view=view, ephemeral=True)
+                # 閾値に達している場合
+                if count >= threshold:
+                    # 既に昇格済みメッセージであればスキップ
+                    if is_message_promoted(message.id):
+                        continue
 
-# ---------------------------------------------------------
-# 5. 動的自動削除バックグラウンドタスク
-# ---------------------------------------------------------
-@tasks.loop(hours=1)
-async def clean_old_messages():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    
-    # 転送先(dest)チャンネルとその保持日数（グループ設定）を取得
-    c.execute('''
-        SELECT gc.channel_id, COALESCE(gs.retention_days, ?) 
-        FROM group_channels gc
-        LEFT JOIN group_settings gs ON gc.guild_id = gs.guild_id AND gc.group_name = gs.group_name
-        WHERE gc.type = 'dest'
-    ''', (DEFAULT_DELETE_AFTER_DAYS,))
-    
-    dest_channels = c.fetchall()
+                    # 3. 昇格先の転送グループを取得（例: "gallery" や "archive" など別グループ、または同グループのdest）
+                    # ルールで指定された「昇格先グループ」の転送先チャンネルへ送る処理
+                    c.execute('''
+                        SELECT channel_id FROM group_channels 
+                        WHERE guild_id = ? AND group_name = ? AND type = 'dest'
+                    ''', (guild.id, group_name))
+                    dest_channels = c.fetchall()
+
+                    for (dest_ch_id,) in dest_channels:
+                        dest_ch = guild.get_channel(dest_ch_id)
+                        if not dest_ch:
+                            continue
+
+                        # 昇格メッセージの作成
+                        embed = discord.Embed(
+                            title="⭐ 注目メッセージ（自動昇格）",
+                            description=message.content if message.content else "*(本文なし・添付ファイルのみ)*",
+                            color=discord.Color.gold(),
+                            timestamp=message.created_at
+                        )
+                        embed.set_author(name=message.author.display_name, icon_url=message.author.display_avatar.url)
+                        embed.add_field(name="元メッセージ", value=f"[リンクはこちら]({message.jump_url})", inline=False)
+                        embed.set_footer(text=f"リアクション {emoji_str} × {count} 達成")
+
+                        # 画像のプレビュー表示（最初の1枚）
+                        if message.attachments:
+                            first_att = message.attachments[0]
+                            if first_att.content_type and first_att.content_type.startswith("image/"):
+                                embed.set_image(url=first_att.url)
+
+                        # メッセージ転送
+                        promoted_msg = await dest_ch.send(embed=embed)
+
+                        # スレッドの自動作成
+                        thread_title = re.sub(r'[\r\n]+', ' ', message.content)[:30] if message.content else "画展議論スレッド"
+                        thread = await promoted_msg.create_thread(
+                            name=f"💬 {thread_title}",
+                            auto_archive_duration=1440 # 24時間でアーカイブ
+                        )
+
+                        # DBに昇格記録を保存（二重昇格防止）
+                        record_promoted_message(
+                            original_message_id=message.id,
+                            promoted_message_id=promoted_msg.id,
+                            thread_id=thread.id,
+                            guild_id=guild.id,
+                            group_name=group_name
+                        )
+
     conn.close()
 
-    now = datetime.now(timezone.utc)
 
-    for ch_id, retention_days in dest_channels:
-        if retention_days <= 0:
-            continue  # 0以下の場合は削除無制限
-        
-        channel = bot.get_channel(ch_id)
-        if not channel:
-            continue
-
-        cutoff_time = now - timedelta(days=retention_days)
-        
-        try:
-            async for message in channel.history(limit=200, before=cutoff_time):
-                if message.pinned:
-                    continue
-                try:
-                    await message.delete()
-                    await asyncio.sleep(1.0)
-                except Exception as e:
-                    print(f"Error deleting message {message.id}: {e}")
-        except Exception as e:
-            print(f"Error checking channel {ch_id}: {e}")
-
-# ---------------------------------------------------------
-# Bot起動
-# ---------------------------------------------------------
+# ==========================================
+# 5. Bot起動エントリーポイント
+# ==========================================
 if __name__ == "__main__":
-    keep_alive()  # Webサーバーの起動（Renderポート対策）
-    if DISCORD_BOT_TOKEN:
-        bot.run(DISCORD_BOT_TOKEN)
+    if not TOKEN:
+        print("エラー: config.py または環境変数に TOKEN が設定されていません。")
     else:
-        print("Error: DISCORD_BOT_TOKENが設定されていません。")
+        bot.run(TOKEN)
