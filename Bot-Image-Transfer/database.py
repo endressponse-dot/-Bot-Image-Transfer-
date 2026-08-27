@@ -12,43 +12,43 @@ def init_db():
     
     # 転送グループのチャンネルマッピング
     c.execute('''
-        CREATE TABLE IF NOT EXISTS group_channels (
-            guild_id INTEGER,
-            group_name TEXT,
-            channel_id INTEGER,
-            type TEXT
-        )
+    CREATE TABLE IF NOT EXISTS group_channels (
+        guild_id INTEGER,
+        group_name TEXT,
+        channel_id INTEGER,
+        type TEXT
+    )
     ''')
     
     # グループごとの個別設定（説明文・保持日数）
     c.execute('''
-        CREATE TABLE IF NOT EXISTS group_settings (
-            guild_id INTEGER,
-            group_name TEXT,
-            description TEXT,
-            retention_days INTEGER DEFAULT 7,
-            PRIMARY KEY (guild_id, group_name)
-        )
+    CREATE TABLE IF NOT EXISTS group_settings (
+        guild_id INTEGER,
+        group_name TEXT,
+        description TEXT,
+        retention_days INTEGER DEFAULT 7,
+        PRIMARY KEY (guild_id, group_name)
+    )
     ''')
     
     # サーバーごとの言語設定 (メイン言語 + カンマ区切りのサブ言語リスト)
     c.execute('''
-        CREATE TABLE IF NOT EXISTS guild_languages (
-            guild_id INTEGER PRIMARY KEY,
-            main_lang TEXT,
-            sub_langs TEXT
-        )
+    CREATE TABLE IF NOT EXISTS guild_languages (
+        guild_id INTEGER PRIMARY KEY,
+        main_lang TEXT,
+        sub_langs TEXT
+    )
     ''')
 
     # 自動昇格ルール（リアクション数による昇格閾値設定）
     c.execute('''
-        CREATE TABLE IF NOT EXISTS promotion_rules (
-            guild_id INTEGER,
-            group_name TEXT,
-            emoji TEXT,
-            threshold INTEGER,
-            PRIMARY KEY (guild_id, group_name, emoji)
-        )
+    CREATE TABLE IF NOT EXISTS promotion_rules (
+        guild_id INTEGER,
+        group_name TEXT,
+        emoji TEXT,
+        threshold INTEGER,
+        PRIMARY KEY (guild_id, group_name, emoji)
+    )
     ''')
 
     # 既存DBへの安全策：promotion_rules に emoji カラムが存在しない古い構造の場合、自動追加
@@ -59,24 +59,24 @@ def init_db():
 
     # 二重転送防止・記録用（メッセージ転送履歴）
     c.execute('''
-        CREATE TABLE IF NOT EXISTS forwarded_messages (
-            original_message_id INTEGER PRIMARY KEY,
-            guild_id INTEGER,
-            group_name TEXT,
-            forwarded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
+    CREATE TABLE IF NOT EXISTS forwarded_messages (
+        original_message_id INTEGER PRIMARY KEY,
+        guild_id INTEGER,
+        group_name TEXT,
+        forwarded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
     ''')
 
     # 自動昇格メッセージ・作成されたスレッドの記録用テーブル
     c.execute('''
-        CREATE TABLE IF NOT EXISTS promoted_messages (
-            original_message_id INTEGER PRIMARY KEY,
-            promoted_message_id INTEGER,
-            thread_id INTEGER,
-            guild_id INTEGER,
-            group_name TEXT,
-            promoted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
+    CREATE TABLE IF NOT EXISTS promoted_messages (
+        original_message_id INTEGER PRIMARY KEY,
+        promoted_message_id INTEGER,
+        thread_id INTEGER,
+        guild_id INTEGER,
+        group_name TEXT,
+        promoted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
     ''')
 
     conn.commit()
@@ -87,7 +87,7 @@ def init_db():
 # 2. 設定テキスト構築・一覧取得関数
 # ==========================================
 
-def build_group_map_text(guild_id: int, locale, bot) -> str:
+def build_group_map_text(guild_id: int, locale) -> str:
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     
@@ -140,8 +140,8 @@ def build_group_map_text(guild_id: int, locale, bot) -> str:
         src_str = ', '.join(src_names) if src_names else '未設定'
         dest_str = ', '.join(dest_names) if dest_names else '未設定'
         
-        lines.append(f"  ├ 転送元 (Source): {src_str}")
-        lines.append(f"  └ 転送先 (Dest): {dest_str}")
+        lines.append(f" ├ 転送元 (Source): {src_str}")
+        lines.append(f" └ 転送先 (Dest): {dest_str}")
 
     return "\n".join(lines)
 
@@ -154,11 +154,11 @@ def get_all_group_names(guild_id: int) -> list[str]:
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''
-        SELECT DISTINCT group_name FROM (
-            SELECT group_name FROM group_channels WHERE guild_id = ?
-            UNION
-            SELECT group_name FROM group_settings WHERE guild_id = ?
-        )
+    SELECT DISTINCT group_name FROM (
+        SELECT group_name FROM group_channels WHERE guild_id = ?
+        UNION
+        SELECT group_name FROM group_settings WHERE guild_id = ?
+    )
     ''', (guild_id, guild_id))
     rows = c.fetchall()
     conn.close()
@@ -195,9 +195,9 @@ def set_group_description(guild_id: int, group_name: str, description: str):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''
-        INSERT INTO group_settings (guild_id, group_name, description)
-        VALUES (?, ?, ?)
-        ON CONFLICT(guild_id, group_name) DO UPDATE SET description = excluded.description
+    INSERT INTO group_settings (guild_id, group_name, description)
+    VALUES (?, ?, ?)
+    ON CONFLICT(guild_id, group_name) DO UPDATE SET description = excluded.description
     ''', (guild_id, group_name, description))
     conn.commit()
     conn.close()
@@ -206,9 +206,9 @@ def set_group_retention_days(guild_id: int, group_name: str, days: int):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''
-        INSERT INTO group_settings (guild_id, group_name, retention_days)
-        VALUES (?, ?, ?)
-        ON CONFLICT(guild_id, group_name) DO UPDATE SET retention_days = excluded.retention_days
+    INSERT INTO group_settings (guild_id, group_name, retention_days)
+    VALUES (?, ?, ?)
+    ON CONFLICT(guild_id, group_name) DO UPDATE SET retention_days = excluded.retention_days
     ''', (guild_id, group_name, days))
     conn.commit()
     conn.close()
@@ -236,11 +236,11 @@ def set_guild_languages(guild_id: int, main_lang: str, sub_langs: list):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''
-        INSERT INTO guild_languages (guild_id, main_lang, sub_langs)
-        VALUES (?, ?, ?)
-        ON CONFLICT(guild_id) DO UPDATE SET 
-            main_lang = excluded.main_lang,
-            sub_langs = excluded.sub_langs
+    INSERT INTO guild_languages (guild_id, main_lang, sub_langs)
+    VALUES (?, ?, ?)
+    ON CONFLICT(guild_id) DO UPDATE SET 
+        main_lang = excluded.main_lang,
+        sub_langs = excluded.sub_langs
     ''', (guild_id, main_lang, sub_langs_str))
     conn.commit()
     conn.close()
@@ -274,9 +274,9 @@ def set_promotion_rule(guild_id: int, group_name: str, emoji: str, threshold: in
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''
-        INSERT INTO promotion_rules (guild_id, group_name, emoji, threshold)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(guild_id, group_name, emoji) DO UPDATE SET threshold = excluded.threshold
+    INSERT INTO promotion_rules (guild_id, group_name, emoji, threshold)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(guild_id, group_name, emoji) DO UPDATE SET threshold = excluded.threshold
     ''', (guild_id, group_name, emoji, threshold))
     conn.commit()
     conn.close()
@@ -325,8 +325,8 @@ def record_forwarded_message(original_message_id: int, guild_id: int, group_name
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''
-        INSERT OR IGNORE INTO forwarded_messages (original_message_id, guild_id, group_name)
-        VALUES (?, ?, ?)
+    INSERT OR IGNORE INTO forwarded_messages (original_message_id, guild_id, group_name)
+    VALUES (?, ?, ?)
     ''', (original_message_id, guild_id, group_name))
     conn.commit()
     conn.close()
@@ -354,8 +354,8 @@ def record_promoted_message(original_message_id: int, promoted_message_id: int, 
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''
-        INSERT OR REPLACE INTO promoted_messages (original_message_id, promoted_message_id, thread_id, guild_id, group_name)
-        VALUES (?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO promoted_messages (original_message_id, promoted_message_id, thread_id, guild_id, group_name)
+    VALUES (?, ?, ?, ?, ?)
     ''', (original_message_id, promoted_message_id, thread_id, guild_id, group_name))
     conn.commit()
     conn.close()
@@ -367,9 +367,9 @@ def get_promoted_message_info(original_message_id: int) -> dict | None:
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''
-        SELECT promoted_message_id, thread_id, group_name 
-        FROM promoted_messages 
-        WHERE original_message_id = ?
+    SELECT promoted_message_id, thread_id, group_name 
+    FROM promoted_messages 
+    WHERE original_message_id = ?
     ''', (original_message_id,))
     row = c.fetchone()
     conn.close()
