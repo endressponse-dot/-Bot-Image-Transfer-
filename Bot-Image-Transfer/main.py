@@ -8,7 +8,6 @@ from discord.ext import commands, tasks
 from config import DISCORD_BOT_TOKEN, DB_FILE, DEFAULT_DELETE_AFTER_DAYS
 from database import (
     init_db, 
-    get_guild_language_setting, 
     build_group_map_text,
     is_message_forwarded,
     record_forwarded_message,
@@ -16,7 +15,6 @@ from database import (
     record_promoted_message,
     get_all_group_names
 )
-from ui_language import send_language_menu
 from ui_group import send_group_management_menu
 from keep_alive import keep_alive
 
@@ -297,28 +295,19 @@ async def config_command(interaction: discord.Interaction):
         await interaction.response.send_message("❌ このコマンドは管理者専用です。", ephemeral=True)
         return
     
-    await send_group_management_menu(interaction, interaction.guild_id, interaction.locale)
-
-@bot.tree.command(name="language", description="言語設定を変更します")
-async def language_command(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ このコマンドは管理者専用です。", ephemeral=True)
-        return
-    
-    await send_language_menu(interaction, interaction.guild_id, interaction.locale)
+    await send_group_management_menu(interaction, interaction.guild_id)
 
 @bot.tree.command(name="list", description="現在の設定一覧を表示します")
 async def list_command(interaction: discord.Interaction):
-    text = build_group_map_text(interaction.guild_id, interaction.locale)
+    text = build_group_map_text(interaction.guild_id)
     await interaction.response.send_message(text, ephemeral=True)
 
 # ---------------------------------------------------------
 # 5. チャンネル全削除機能 (/clear_channel)
 # ---------------------------------------------------------
 class ClearConfirmView(discord.ui.View):
-    def __init__(self, locale):
+    def __init__(self):
         super().__init__(timeout=60)
-        self.locale = locale
 
     @discord.ui.button(label="🗑️ 実行する", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -359,7 +348,7 @@ async def clear_channel_command(interaction: discord.Interaction):
         return
     
     warn_text = "⚠️ **警告**: このチャンネルの過去メッセージを削除します。よろしいですか？"
-    view = ClearConfirmView(interaction.locale)
+    view = ClearConfirmView()
     await interaction.response.send_message(warn_text, view=view, ephemeral=True)
 
 # ---------------------------------------------------------
