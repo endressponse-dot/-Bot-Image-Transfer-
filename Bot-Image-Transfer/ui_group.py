@@ -1,476 +1,332 @@
 import discord
-from locales import get_text
+import sqlite3
+from config import DB_FILE, DEFAULT_DELETE_AFTER_DAYS
 from database import (
-    add_group_channel, 
-    delete_group_channel, 
-    set_group_retention_days, 
     build_group_map_text,
     get_all_group_names,
-    set_promotion_rule,
-    get_promotion_rules,
-    remove_promotion_rule
+    add_group_channel,
+    delete_group_channel,
+    set_group_description,
+    set_group_retention_days
 )
 
 # ==========================================
-# 戻るボタン用のコンポーネント
+# 1. 外部呼び出し用エントリーポイント
 # ==========================================
 
-class BackToMainMenuButton(discord.ui.Button):
-    def __init__(self, guild_id: int, locale, bot, row: int = 2):
-        super().__init__(label="🔙 メインメニューへ戻る", style=discord.ButtonStyle.secondary, row=row)
-        self.guild_id = guild_id
-        self.locale = locale
-        self.bot = bot
-
-    async def callback(self, interaction: discord.Interaction):
-        prompt_text = get_text(self.locale, "menu_prompt")
-        view = OperationSelectView(self.guild_id, self.locale, self.bot)
-        await interaction.response.edit_message(content=f"📁 **{prompt_text}**", view=view)
-
-
-# ==========================================
-# 1. 操作選択メニュー（保持期間・チャンネル選択）
-# ==========================================
-
-class RetentionSelect(discord.ui.Select):
-    def __init__(self, group_name: str, guild_id: int, locale):
-        self.group_name = group_name
-        self.guild_id = guild_id
-        self.locale = locale
-        
-        options = [
-            discord.SelectOption(label="1日", value="1", description="1日後にメッセージを自動削除"),
-            discord.SelectOption(label="3日", value="3", description="3日後にメッセージを自動削除"),
-            discord.SelectOption(label="7日 (デフォルト)", value="7", description="7日後にメッセージを自動削除"),
-            discord.SelectOption(label="14日", value="14", description="14日後にメッセージを自動削除"),
-            discord.SelectOption(label="30日", value="30", description="30日後にメッセージを自動削除"),
-            discord.SelectOption(label="無制限 (自動削除なし)", value="0", description="自動削除を行いません"),
-        ]
-        super().__init__(placeholder="⏳ 画像・メッセージの保持期間を選択...", min_values=1, max_values=1, options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        days = int(self.values[0])
-        set_group_retention_days(self.guild_id, self.group_name, days)
-        days_str = f"{days}日間" if days > 0 else "無制限"
-        
-        # 画面圧迫防止のため、画面上のメニューを最新のグループ管理画面に更新
-        view = GroupActionView(self.guild_id, self.group_name, self.locale, interaction.client)
-        updated_text = build_group_map_text(self.guild_id, self.locale, interaction.client)
-        msg_content = f"✅ グループ **{self.group_name}** の保持期間を **{days_str}** に設定しました。\n\n{updated_text}"
-        
-        await interaction.response.edit_message(content=msg_content, view=view)
-
-
-class GroupChannelSelectView(discord.ui.View):
-    def __init__(self, guild_id: int, group_name: str, action_type: str, locale, bot):
-        super().__init__(timeout=180)
-        self.guild_id = guild_id
-        self.group_name = group_name
-        self.action_type = action_type  # 'add_src', 'add_dest'
-        self.locale = locale
-        self.bot = bot
-
-        channel_select = discord.ui.ChannelSelect(
-            placeholder="対象のチャンネルまたはスレッドを選択...",
-            channel_types=[
-                discord.ChannelType.text,           # テキストチャンネル
-                discord.ChannelType.forum,          # フォーラムチャンネル
-                discord.ChannelType.public_thread,  # 公開スレッド
-                discord.ChannelType.private_thread, # 非公開スレッド
-                discord.ChannelType.news,           # アナウンスチャンネル
-                discord.ChannelType.news_thread     # アナウンススレッド
-            ],
-            min_values=1,
-            max_values=1
-        )
-        channel_select.callback = self.channel_select_callback
-        self.add_item(channel_select)
-        
-        # 戻るボタンの追加
-        self.add_item(BackToMainMenuButton(guild_id, locale, bot, row=1))
-
-    async def channel_select_callback(self, interaction: discord.Interaction):
-        values = interaction.data.get('values', [])
-        if not values:
-            await interaction.response.send_message("❌ チャンネルの取得に失敗しました。", ephemeral=True, delete_after=5)
-            return
-
-        selected_channel_id = values[0]
-        ch_type = "src" if self.action_type == "add_src" else "dest"
-        
-        add_group_channel(self.guild_id, self.group_name, int(selected_channel_id), ch_type)
-        
-        type_str = "転送元 (Source)" if ch_type == "src" else "転送先 (Dest)"
-        
-        # 画面圧迫防止：編集画面に戻しつつ更新通知を表示
-        view = GroupActionView(self.guild_id, self.group_name, self.locale, interaction.client)
-        updated_text = build_group_map_text(self.guild_id, self.locale, interaction.client)
-        msg_content = f"✅ グループ **{self.group_name}** の **{type_str}** に <#{selected_channel_id}> を追加しました。\n\n{updated_text}"
-        
-        await interaction.response.edit_message(content=msg_content, view=view)
-
-
-# ==========================================
-# 2. 自動昇格ルール設定 UI・モーダル
-# ==========================================
-
-class EmojiSelect(discord.ui.Select):
-    def __init__(self, guild_id: int, group_name: str, locale):
-        self.guild_id = guild_id
-        self.group_name = group_name
-        self.locale = locale
-
-        options = [
-            discord.SelectOption(label="⭐ 星 (Star)", value="⭐", emoji="⭐"),
-            discord.SelectOption(label="❤️ ハート (Heart)", value="❤️", emoji="❤️"),
-            discord.SelectOption(label="🔥 炎 (Fire)", value="🔥", emoji="🔥"),
-            discord.SelectOption(label="👍 グッド (Thumbs Up)", value="👍", emoji="👍"),
-            discord.SelectOption(label="👏 拍手 (Clap)", value="👏", emoji="👏"),
-            discord.SelectOption(label="🎉 クラッカー (Tada)", value="🎉", emoji="🎉"),
-        ]
-        super().__init__(
-            placeholder="使用する絵文字を選択してください...",
-            min_values=1,
-            max_values=1,
-            options=options,
-            row=0
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        selected_emoji = self.values[0]
-        modal = PromotionThresholdModal(self.guild_id, self.group_name, selected_emoji, self.locale)
-        await interaction.response.send_modal(modal)
-
-
-class PromotionThresholdModal(discord.ui.Modal):
-    threshold_input = discord.ui.TextInput(
-        label="昇格に必要なリアクション数",
-        placeholder="例: 5",
-        required=True,
-        max_length=5
+async def send_group_management_menu(interaction: discord.Interaction, guild_id: int, locale):
+    """
+    /config コマンドなどから呼び出されるメインパネル送信関数
+    """
+    embed = discord.Embed(
+        title="⚙️ 転送グループ管理パネル",
+        description="下のボタンを選択してグループの設定を行ってください。",
+        color=discord.Color.blue()
     )
-
-    def __init__(self, guild_id: int, group_name: str, emoji_str: str, locale):
-        super().__init__(title=f"「{emoji_str}」の必要リアクション数設定")
-        self.guild_id = guild_id
-        self.group_name = group_name
-        self.emoji_str = emoji_str
-        self.locale = locale
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            threshold = int(self.threshold_input.value.strip())
-            if threshold <= 0:
-                raise ValueError()
-        except ValueError:
-            await interaction.response.send_message("❌ リアクション数は1以上の数値を入力してください。", ephemeral=True)
-            return
-
-        set_promotion_rule(self.guild_id, self.group_name, self.emoji_str, threshold)
-
-        view = PromotionSetupView(self.guild_id, self.group_name, self.locale, interaction.client)
-        rules = get_promotion_rules(self.guild_id, self.group_name)
-        rules_str = "\n".join([f"• {r['emoji']} : {r['threshold']}個" for r in rules]) if rules else "設定なし"
-
-        await interaction.response.edit_message(
-            content=f"✅ グループ **{self.group_name}** に昇格ルール（{self.emoji_str} × {threshold}個）を設定しました。\n\n**【現在の設定一覧】**\n{rules_str}",
-            view=view
-        )
-
-
-class CustomEmojiPromotionModal(discord.ui.Modal, title="手動入力でルールを追加"):
-    emoji_input = discord.ui.TextInput(
-        label="対象の絵文字 (絵文字またはカスタム絵文字)",
-        placeholder="例: ⭐ や :custom_emoji:",
-        required=True,
-        max_length=50
-    )
-    threshold_input = discord.ui.TextInput(
-        label="昇格に必要なリアクション数",
-        placeholder="例: 5",
-        required=True,
-        max_length=5
-    )
-
-    def __init__(self, guild_id: int, group_name: str, locale):
-        super().__init__()
-        self.guild_id = guild_id
-        self.group_name = group_name
-        self.locale = locale
-
-    async def on_submit(self, interaction: discord.Interaction):
-        emoji_str = self.emoji_input.value.strip()
-        try:
-            threshold = int(self.threshold_input.value.strip())
-            if threshold <= 0:
-                raise ValueError()
-        except ValueError:
-            await interaction.response.send_message("❌ リアクション数は1以上の数値を入力してください。", ephemeral=True)
-            return
-
-        set_promotion_rule(self.guild_id, self.group_name, emoji_str, threshold)
-
-        view = PromotionSetupView(self.guild_id, self.group_name, self.locale, interaction.client)
-        rules = get_promotion_rules(self.guild_id, self.group_name)
-        rules_str = "\n".join([f"• {r['emoji']} : {r['threshold']}個" for r in rules]) if rules else "設定なし"
-
-        await interaction.response.edit_message(
-            content=f"✅ グループ **{self.group_name}** に昇格ルールを追加しました。\n\n**【現在の設定一覧】**\n{rules_str}",
-            view=view
-        )
-
-
-class RuleDeleteSelect(discord.ui.Select):
-    def __init__(self, guild_id: int, group_name: str, rules: list, locale):
-        self.guild_id = guild_id
-        self.group_name = group_name
-        self.locale = locale
-
-        options = [
-            discord.SelectOption(
-                label=f"{r['emoji']} (必要数: {r['threshold']}個)", 
-                value=r['emoji']
-            ) for r in rules
-        ]
-        super().__init__(
-            placeholder="削除する昇格ルールを選択してください...",
-            min_values=1,
-            max_values=1,
-            options=options
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        selected_emoji = self.values[0]
-        remove_promotion_rule(self.guild_id, self.group_name, selected_emoji)
-
-        rules = get_promotion_rules(self.guild_id, self.group_name)
-        rules_str = "\n".join([f"• {r['emoji']} : {r['threshold']}個" for r in rules]) if rules else "設定なし"
-        view = PromotionSetupView(self.guild_id, self.group_name, self.locale, interaction.client)
-
-        await interaction.response.edit_message(
-            content=f"🗑️ 昇格ルール（{selected_emoji}）を削除しました。\n\n**【現在の設定一覧】**\n{rules_str}",
-            view=view
-        )
-
-
-class PromotionSetupView(discord.ui.View):
-    def __init__(self, guild_id: int, group_name: str, locale, bot):
-        super().__init__(timeout=180)
-        self.guild_id = guild_id
-        self.group_name = group_name
-        self.locale = locale
-        self.bot = bot
-
-        # 絵文字選択ドロップダウンの追加
-        self.add_item(EmojiSelect(guild_id, group_name, locale))
-
-    @discord.ui.button(label="✏️ その他の絵文字を入力", style=discord.ButtonStyle.primary, row=1)
-    async def add_custom_rule(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = CustomEmojiPromotionModal(self.guild_id, self.group_name, self.locale)
-        await interaction.response.send_modal(modal)
-
-    @discord.ui.button(label="🗑️ ルールを削除", style=discord.ButtonStyle.danger, row=1)
-    async def delete_rule_menu(self, interaction: discord.Interaction, button: discord.ui.Button):
-        rules = get_promotion_rules(self.guild_id, self.group_name)
-        if not rules:
-            await interaction.response.send_message("❌ 削除できる昇格ルールが存在しません。", ephemeral=True, delete_after=5)
-            return
-
-        view = discord.ui.View()
-        view.add_item(RuleDeleteSelect(self.guild_id, self.group_name, rules, self.locale))
-        
-        # 戻るボタン
-        back_btn = discord.ui.Button(label="🔙 昇格設定に戻る", style=discord.ButtonStyle.secondary)
-        async def back_callback(back_interaction: discord.Interaction):
-            rules_now = get_promotion_rules(self.guild_id, self.group_name)
-            rules_str_now = "\n".join([f"• {r['emoji']} : {r['threshold']}個" for r in rules_now]) if rules_now else "設定なし"
-            setup_view = PromotionSetupView(self.guild_id, self.group_name, self.locale, self.bot)
-            await back_interaction.response.edit_message(
-                content=f"⭐ **グループ: {self.group_name}** の自動昇格ルール設定\n\n**【現在の設定一覧】**\n{rules_str_now}",
-                view=setup_view
-            )
-        back_btn.callback = back_callback
-        view.add_item(back_btn)
-
-        await interaction.response.edit_message(content="🗑️ **削除するルールを選択してください:**", view=view)
-
-    @discord.ui.button(label="🔙 グループ編集に戻る", style=discord.ButtonStyle.secondary, row=1)
-    async def back_to_group(self, interaction: discord.Interaction, button: discord.ui.Button):
-        view = GroupActionView(self.guild_id, self.group_name, self.locale, self.bot)
-        await interaction.response.edit_message(
-            content=f"⚙️ グループ **{self.group_name}** の設定・編集を行います。操作を選択してください:",
-            view=view
-        )
+    view = GroupActionView(guild_id, locale)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 # ==========================================
-# 3. グループ詳細操作・編集UI
+# 2. メイン操作ボタンビュー (GroupActionView)
 # ==========================================
 
 class GroupActionView(discord.ui.View):
-    def __init__(self, guild_id: int, group_name: str, locale, bot=None):
+    def __init__(self, guild_id: int, locale):
         super().__init__(timeout=180)
         self.guild_id = guild_id
-        self.group_name = group_name
         self.locale = locale
-        self.bot = bot
 
-        # 保持期間選択ドロップダウンを追加
-        self.add_item(RetentionSelect(group_name, guild_id, locale))
-        # メインメニューに戻るボタンを追加
-        if bot:
-            self.add_item(BackToMainMenuButton(guild_id, locale, bot, row=2))
+    @discord.ui.button(label="📋 一覧表示", style=discord.ButtonStyle.secondary, row=0)
+    async def show_list(self, interaction: discord.Interaction, button: discord.ui.Button):
+        text = build_group_map_text(self.guild_id, self.locale)
+        await interaction.response.send_message(text, ephemeral=True)
 
-    @discord.ui.button(label="📥 転送元を追加", style=discord.ButtonStyle.primary, row=1)
-    async def add_source(self, interaction: discord.Interaction, button: discord.ui.Button):
-        view = GroupChannelSelectView(self.guild_id, self.group_name, "add_src", self.locale, interaction.client)
-        await interaction.response.edit_message(content="📥 転送元に指定するチャンネルまたはスレッドを選択してください:", view=view)
+    @discord.ui.button(label="➕ チャンネル追加", style=discord.ButtonStyle.success, row=0)
+    async def add_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = AddChannelSelectView(self.guild_id, self.locale)
+        await interaction.response.send_message("登録するチャンネルを選択してください:", view=view, ephemeral=True)
 
-    @discord.ui.button(label="📤 転送先を追加", style=discord.ButtonStyle.success, row=1)
-    async def add_dest(self, interaction: discord.Interaction, button: discord.ui.Button):
-        view = GroupChannelSelectView(self.guild_id, self.group_name, "add_dest", self.locale, interaction.client)
-        await interaction.response.edit_message(content="📤 転送先に指定するチャンネルまたはスレッドを選択してください:", view=view)
+    @discord.ui.button(label="✏️ 説明文設定", style=discord.ButtonStyle.primary, row=1)
+    async def set_desc(self, interaction: discord.Interaction, button: discord.ui.Button):
+        groups = get_all_group_names(self.guild_id)
+        if not groups:
+            await interaction.response.send_message("❌ 設定可能なグループが存在しません。", ephemeral=True)
+            return
+        view = SelectGroupForModalView(self.guild_id, self.locale, action_type="desc")
+        await interaction.response.send_message("説明文を設定するグループを選択してください:", view=view, ephemeral=True)
 
-    @discord.ui.button(label="⭐ 自動昇格設定", style=discord.ButtonStyle.secondary, row=1)
-    async def config_promotion(self, interaction: discord.Interaction, button: discord.ui.Button):
-        rules = get_promotion_rules(self.guild_id, self.group_name)
-        rules_str = "\n".join([f"• {r['emoji']} : {r['threshold']}個" for r in rules]) if rules else "設定なし"
-        
-        view = PromotionSetupView(self.guild_id, self.group_name, self.locale, interaction.client)
-        await interaction.response.edit_message(
-            content=f"⭐ **グループ: {self.group_name}** の自動昇格ルール設定\n\n**【現在の設定一覧】**\n{rules_str}",
-            view=view
-        )
+    @discord.ui.button(label="⏳ 保持期間設定", style=discord.ButtonStyle.primary, row=1)
+    async def set_retention(self, interaction: discord.Interaction, button: discord.ui.Button):
+        groups = get_all_group_names(self.guild_id)
+        if not groups:
+            await interaction.response.send_message("❌ 設定可能なグループが存在しません。", ephemeral=True)
+            return
+        view = SelectGroupForRetentionView(self.guild_id, self.locale)
+        await interaction.response.send_message("保持期間を設定するグループを選択してください:", view=view, ephemeral=True)
 
-    @discord.ui.button(label="🗑️ このグループを削除", style=discord.ButtonStyle.danger, row=1)
+    @discord.ui.button(label="🗑️ グループ削除", style=discord.ButtonStyle.danger, row=2)
     async def delete_group(self, interaction: discord.Interaction, button: discord.ui.Button):
-        delete_group_channel(self.guild_id, self.group_name)
-        
-        # 削除後はメインメニューへ戻す
-        view = OperationSelectView(self.guild_id, self.locale, interaction.client)
-        updated_text = build_group_map_text(self.guild_id, self.locale, interaction.client)
-        msg_content = f"🗑️ グループ **{self.group_name}** を削除しました。\n\n{updated_text}"
-        
-        await interaction.response.edit_message(content=msg_content, view=view)
+        groups = get_all_group_names(self.guild_id)
+        if not groups:
+            await interaction.response.send_message("❌ 削除可能なグループが存在しません。", ephemeral=True)
+            return
+        view = GroupDeleteSelectView(self.guild_id, self.locale)
+        await interaction.response.send_message("削除するグループを選択してください:", view=view, ephemeral=True)
 
 
 # ==========================================
-# 4. グループ選択・新規作成モーダル
+# 3. チャンネル追加フロー (UI View & Select)
 # ==========================================
 
-class NewGroupModal(discord.ui.Modal, title="新規グループ作成"):
-    group_name_input = discord.ui.TextInput(
-        label="グループ名",
-        placeholder="例: main-group, art-forward",
-        required=True,
-        max_length=30
-    )
-
+class AddChannelSelectView(discord.ui.View):
     def __init__(self, guild_id: int, locale):
-        super().__init__()
+        super().__init__(timeout=120)
         self.guild_id = guild_id
         self.locale = locale
+
+        # チャンネル選択メニュー
+        self.add_item(discord.ui.ChannelSelect(
+            placeholder="対象のチャンネルを選択...",
+            channel_types=[discord.ChannelType.text, discord.ChannelType.forum, discord.ChannelType.news],
+            custom_id="select_channel"
+        ))
+
+    @discord.ui.select(custom_id="select_channel")
+    async def channel_selected(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
+        selected_channel = select.values[0]
+        # 次に転送種別（転送元 or 転送先）を選択するビューへ移行
+        view = AddChannelTypeView(self.guild_id, self.locale, selected_channel.id)
+        await interaction.response.send_message(
+            f"チャンネル <#{selected_channel.id}> の転送種別を選択してください:", 
+            view=view, 
+            ephemeral=True
+        )
+
+
+class AddChannelTypeView(discord.ui.View):
+    def __init__(self, guild_id: int, locale, channel_id: int):
+        super().__init__(timeout=120)
+        self.guild_id = guild_id
+        self.locale = locale
+        self.channel_id = channel_id
+
+    @discord.ui.button(label="📥 転送元 (Source)", style=discord.ButtonStyle.primary)
+    async def select_src(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(GroupInputModal(self.guild_id, self.locale, self.channel_id, "src"))
+
+    @discord.ui.button(label="📤 転送先 (Dest)", style=discord.ButtonStyle.success)
+    async def select_dest(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(GroupInputModal(self.guild_id, self.locale, self.channel_id, "dest"))
+
+
+class GroupInputModal(discord.ui.Modal):
+    def __init__(self, guild_id: int, locale, channel_id: int, ch_type: str):
+        super().__init__(title="グループ名の入力")
+        self.guild_id = guild_id
+        self.locale = locale
+        self.channel_id = channel_id
+        self.ch_type = ch_type
+
+        self.group_name_input = discord.ui.TextInput(
+            label="グループ名",
+            placeholder="例: main-art, announcements",
+            required=True,
+            max_length=50
+        )
+        self.add_item(self.group_name_input)
 
     async def on_submit(self, interaction: discord.Interaction):
-        g_name = self.group_name_input.value.strip()
-        view = GroupActionView(self.guild_id, g_name, self.locale, interaction.client)
+        group_name = self.group_name_input.value.strip()
+        add_group_channel(self.guild_id, group_name, self.channel_id, self.ch_type)
         
-        # モーダル送信時のレスポンスを上書き編集し、画面増加を防止
-        await interaction.response.edit_message(
-            content=f"✨ 新規グループ **{g_name}** を作成しました。続いて設定を行ってください:",
-            view=view
+        # 修正：bot 引数を除外してテキスト取得
+        updated_text = build_group_map_text(self.guild_id, self.locale)
+        await interaction.response.send_message(
+            f"✅ チャンネル <#{self.channel_id}> をグループ `{group_name}` の `{self.ch_type}` に追加しました！\n\n{updated_text}",
+            ephemeral=True
         )
 
 
-class GroupSelectMenu(discord.ui.Select):
-    def __init__(self, guild_id: int, groups: list, locale):
+# ==========================================
+# 4. 説明文設定モーダル & 選択ビュー
+# ==========================================
+
+class SelectGroupForModalView(discord.ui.View):
+    def __init__(self, guild_id: int, locale, action_type: str):
+        super().__init__(timeout=120)
         self.guild_id = guild_id
         self.locale = locale
-        
-        options = [discord.SelectOption(label=f"📁 {g}", value=g) for g in groups]
-        options.append(discord.SelectOption(label="➕ 新しいグループを作成", value="__new__"))
-        
-        super().__init__(placeholder="編集するグループを選択してください...", min_values=1, max_values=1, options=options)
+        self.action_type = action_type
 
-    async def callback(self, interaction: discord.Interaction):
-        selected_val = self.values[0]
-        if selected_val == "__new__":
-            modal = NewGroupModal(self.guild_id, self.locale)
-            await interaction.response.send_modal(modal)
-        else:
-            view = GroupActionView(self.guild_id, selected_val, self.locale, interaction.client)
-            # 前の画面を消去せずに上書き編集
-            await interaction.response.edit_message(
-                content=f"⚙️ グループ **{selected_val}** の設定・編集を行います。操作を選択してください:",
-                view=view
-            )
+        groups = get_all_group_names(guild_id)
+        options = [discord.SelectOption(label=g, value=g) for g in groups[:25]]
+
+        select = discord.ui.Select(placeholder="グループを選択してください...", options=options)
+        select.callback = self.group_selected
+        self.add_item(select)
+
+    async def group_selected(self, interaction: discord.Interaction):
+        group_name = interaction.data["values"][0]
+        if self.action_type == "desc":
+            await interaction.response.send_modal(DescriptionModal(self.guild_id, self.locale, group_name))
 
 
-class GroupDeleteSelectMenu(discord.ui.Select):
-    def __init__(self, guild_id: int, groups: list, locale):
+class DescriptionModal(discord.ui.Modal):
+    def __init__(self, guild_id: int, locale, group_name: str):
+        super().__init__(title=f"説明文設定: {group_name}")
         self.guild_id = guild_id
         self.locale = locale
-        
-        options = [discord.SelectOption(label=f"🗑️ {g}", value=g) for g in groups]
-        super().__init__(placeholder="削除するグループを選択してください...", min_values=1, max_values=1, options=options)
+        self.group_name = group_name
 
-    async def callback(self, interaction: discord.Interaction):
-        selected_val = self.values[0]
-        delete_group_channel(self.guild_id, selected_val)
+        self.desc_input = discord.ui.TextInput(
+            label="グループの説明文",
+            style=discord.TextStyle.paragraph,
+            placeholder="このグループの用途を入力してください",
+            required=False,
+            max_length=200
+        )
+        self.add_item(self.desc_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        desc = self.desc_input.value.strip()
+        set_group_description(self.guild_id, self.group_name, desc)
         
-        # 削除後、メインメニュー画面へ上書き復帰
-        view = OperationSelectView(self.guild_id, self.locale, interaction.client)
-        updated_text = build_group_map_text(self.guild_id, self.locale, interaction.client)
-        msg_content = f"🗑️ グループ **{selected_val}** を削除しました。\n\n{updated_text}"
-        
-        await interaction.response.edit_message(content=msg_content, view=view)
+        # 修正：bot 引数を除外
+        updated_text = build_group_map_text(self.guild_id, self.locale)
+        await interaction.response.send_message(
+            f"✅ グループ `{self.group_name}` の説明文を更新しました。\n\n{updated_text}",
+            ephemeral=True
+        )
 
 
 # ==========================================
-# 5. トップレベル操作選択UI（Main Menu）
+# 5. 保持期間設定ビュー & ドロップダウン
+# ==========================================
+
+class SelectGroupForRetentionView(discord.ui.View):
+    def __init__(self, guild_id: int, locale):
+        super().__init__(timeout=120)
+        self.guild_id = guild_id
+        self.locale = locale
+
+        groups = get_all_group_names(guild_id)
+        options = [discord.SelectOption(label=g, value=g) for g in groups[:25]]
+
+        select = discord.ui.Select(placeholder="グループを選択してください...", options=options)
+        select.callback = self.group_selected
+        self.add_item(select)
+
+    async def group_selected(self, interaction: discord.Interaction):
+        group_name = interaction.data["values"][0]
+        view = RetentionSelectView(self.guild_id, self.locale, group_name)
+        await interaction.response.send_message(
+            f"グループ `{group_name}` のメッセージ保持期間を選択してください:",
+            view=view,
+            ephemeral=True
+        )
+
+
+class RetentionSelectView(discord.ui.View):
+    def __init__(self, guild_id: int, locale, group_name: str):
+        super().__init__(timeout=120)
+        self.guild_id = guild_id
+        self.locale = locale
+        self.group_name = group_name
+
+        options = [
+            discord.SelectOption(label="無制限 (自動削除なし)", value="0"),
+            discord.SelectOption(label="1日間", value="1"),
+            discord.SelectOption(label="3日間", value="3"),
+            discord.SelectOption(label="7日間 (デフォルト)", value="7"),
+            discord.SelectOption(label="14日間", value="14"),
+            discord.SelectOption(label="30日間", value="30"),
+        ]
+
+        select = discord.ui.Select(placeholder="保持日数を選択...", options=options)
+        select.callback = self.retention_selected
+        self.add_item(select)
+
+    async def retention_selected(self, interaction: discord.Interaction):
+        days = int(interaction.data["values"][0])
+        set_group_retention_days(self.guild_id, self.group_name, days)
+        
+        # 修正：bot 引数を除外
+        updated_text = build_group_map_text(self.guild_id, self.locale)
+        days_str = f"{days}日間" if days > 0 else "無制限"
+        await interaction.response.send_message(
+            f"✅ グループ `{self.group_name}` の保持期間を `{days_str}` に設定しました。\n\n{updated_text}",
+            ephemeral=True
+        )
+
+
+# ==========================================
+# 6. グループ削除フロー (UI View & Select)
+# ==========================================
+
+class GroupDeleteSelectView(discord.ui.View):
+    def __init__(self, guild_id: int, locale):
+        super().__init__(timeout=120)
+        self.guild_id = guild_id
+        self.locale = locale
+
+        groups = get_all_group_names(guild_id)
+        options = [discord.SelectOption(label=g, value=g) for g in groups[:25]]
+
+        select = discord.ui.Select(placeholder="削除するグループを選択...", options=options)
+        select.callback = self.group_selected
+        self.add_item(select)
+
+    async def group_selected(self, interaction: discord.Interaction):
+        group_name = interaction.data["values"][0]
+        delete_group_channel(self.guild_id, group_name)
+        
+        # 修正：bot 引数を除外
+        updated_text = build_group_map_text(self.guild_id, self.locale)
+        await interaction.response.send_message(
+            f"🗑️ グループ `{group_name}` を削除しました。\n\n{updated_text}",
+            ephemeral=True
+        )
+
+
+# ==========================================
+# 7. `/ops` コマンド用 ドロップダウン操作ビュー
 # ==========================================
 
 class OperationSelectView(discord.ui.View):
-    def __init__(self, guild_id: int, locale, bot):
+    def __init__(self, guild_id: int, locale):
         super().__init__(timeout=180)
         self.guild_id = guild_id
         self.locale = locale
-        self.bot = bot
 
-    @discord.ui.button(label="📋 設定一覧を表示", style=discord.ButtonStyle.secondary, row=0)
-    async def show_list(self, interaction: discord.Interaction, button: discord.ui.Button):
-        text = build_group_map_text(self.guild_id, self.locale, self.bot)
-        # 既存画面を保持したまま最新一覧に表示を切り替え
-        await interaction.response.edit_message(content=text, view=self)
+        options = [
+            discord.SelectOption(label="📋 設定一覧の表示", value="list", description="現在の転送設定を表示します"),
+            discord.SelectOption(label="➕ チャンネルの追加", value="add", description="転送元/転送先チャンネルを追加します"),
+            discord.SelectOption(label="✏️ 説明文の設定", value="desc", description="グループの用途説明を設定します"),
+            discord.SelectOption(label="⏳ 保持期間の設定", value="retention", description="メッセージの自動削除期間を設定します"),
+            discord.SelectOption(label="🗑️ グループの削除", value="delete", description="グループ設定を削除します"),
+        ]
 
-    @discord.ui.button(label="⚙️ グループ編集・追加", style=discord.ButtonStyle.primary, row=0)
-    async def edit_group(self, interaction: discord.Interaction, button: discord.ui.Button):
-        existing_groups = get_all_group_names(self.guild_id)
-        
-        view = discord.ui.View()
-        view.add_item(GroupSelectMenu(self.guild_id, existing_groups, self.locale))
-        view.add_item(BackToMainMenuButton(self.guild_id, self.locale, self.bot, row=1))
-        
-        prompt_text = get_text(self.locale, "select_group_to_edit")
-        await interaction.response.edit_message(content=prompt_text, view=view)
+        select = discord.ui.Select(placeholder="実行したい操作を選択してください...", options=options)
+        select.callback = self.operation_selected
+        self.add_item(select)
 
-    @discord.ui.button(label="🗑️ グループ削除", style=discord.ButtonStyle.danger, row=0)
-    async def delete_group_menu(self, interaction: discord.Interaction, button: discord.ui.Button):
-        existing_groups = get_all_group_names(self.guild_id)
-        
-        if not existing_groups:
-            await interaction.response.send_message("❌ 削除できるグループが存在しません。", ephemeral=True, delete_after=5)
-            return
+    async def operation_selected(self, interaction: discord.Interaction):
+        val = interaction.data["values"][0]
 
-        view = discord.ui.View()
-        view.add_item(GroupDeleteSelectMenu(self.guild_id, existing_groups, self.locale))
-        view.add_item(BackToMainMenuButton(self.guild_id, self.locale, self.bot, row=1))
-        
-        prompt_text = get_text(self.locale, "select_group_to_delete")
-        await interaction.response.edit_message(content=prompt_text, view=view)
-
-
-async def send_group_management_menu(interaction: discord.Interaction, guild_id: int, locale):
-    prompt_text = get_text(locale, "menu_prompt")
-    view = OperationSelectView(guild_id, locale, interaction.client)
-    await interaction.response.send_message(f"📁 **{prompt_text}**", view=view, ephemeral=True)
+        if val == "list":
+            # 修正：bot 引数を除外
+            text = build_group_map_text(self.guild_id, self.locale)
+            await interaction.response.send_message(text, ephemeral=True)
+        elif val == "add":
+            view = AddChannelSelectView(self.guild_id, self.locale)
+            await interaction.response.send_message("登録するチャンネルを選択してください:", view=view, ephemeral=True)
+        elif val == "desc":
+            view = SelectGroupForModalView(self.guild_id, self.locale, action_type="desc")
+            await interaction.response.send_message("説明文を設定するグループを選択してください:", view=view, ephemeral=True)
+        elif val == "retention":
+            view = SelectGroupForRetentionView(self.guild_id, self.locale)
+            await interaction.response.send_message("保持期間を設定するグループを選択してください:", view=view, ephemeral=True)
+        elif val == "delete":
+            view = GroupDeleteSelectView(self.guild_id, self.locale)
+            await interaction.response.send_message("削除するグループを選択してください:", view=view, ephemeral=True)
