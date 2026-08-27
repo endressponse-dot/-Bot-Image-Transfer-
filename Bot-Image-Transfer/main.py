@@ -4,8 +4,8 @@ import sqlite3
 import datetime
 import re
 
-# モジュールインポート
-from config import TOKEN, DB_FILE
+# モジュールインポート（TOKEN から DISCORD_BOT_TOKEN へ修正）
+from config import DISCORD_BOT_TOKEN, DB_FILE
 from database import (
     init_db,
     build_group_map_text,
@@ -280,8 +280,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
                     if is_message_promoted(message.id):
                         continue
 
-                    # 3. 昇格先の転送グループを取得（例: "gallery" や "archive" など別グループ、または同グループのdest）
-                    # ルールで指定された「昇格先グループ」の転送先チャンネルへ送る処理
+                    # 3. 昇格先の転送グループを取得
                     c.execute('''
                         SELECT channel_id FROM group_channels 
                         WHERE guild_id = ? AND group_name = ? AND type = 'dest'
@@ -333,10 +332,10 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 
 
 # ==========================================
-# 5. Bot起動エントリーポイント
+# 5. Bot起動エントリーポイント（変数名を修正）
 # ==========================================
 if __name__ == "__main__":
-    if not TOKEN:
-        print("エラー: config.py または環境変数に TOKEN が設定されていません。")
+    if not DISCORD_BOT_TOKEN:
+        print("エラー: config.py または環境変数に DISCORD_BOT_TOKEN が設定されていません。")
     else:
-        bot.run(TOKEN)
+        bot.run(DISCORD_BOT_TOKEN)
