@@ -88,6 +88,10 @@ def init_db():
 # ==========================================
 
 def build_group_map_text(guild_id: int, locale) -> str:
+    """
+    サーバー内の設定状況（言語設定・転送グループ・チャンネル一覧）を整形テキストとして出力します。
+    ※ チャンネル表示は <#channel_id> 形式のため bot オブジェクトは不要です。
+    """
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     
