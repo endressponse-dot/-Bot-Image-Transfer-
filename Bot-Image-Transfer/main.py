@@ -20,10 +20,10 @@ from ui_language import send_language_menu
 from ui_group import send_group_management_menu
 from keep_alive import keep_alive
 
-# 【新規追加】作成した ui_dashboard からダッシュボード画面とビューを読み込み
-from ui_dashboard import create_dashboard_embed, RuleDashboardView
+# ダッシュボードモジュールの読み込み
+from ui_dashboard import create_dashboard_embed, RuleDashboardView, CreateGroupModal
 
-# 権限(Intents)の設定：スレッド・メッセージコンテンツ・リアクション読み取りを確実に許可
+# 権限(Intents)の設定
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
@@ -35,10 +35,8 @@ class CustomBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
-        # 1. データベースの初期化
         init_db()
 
-        # 2. Cogs の非同期ロード
         try:
             await self.load_extension("cogs.transfer")
             print("Loaded extension: cogs.transfer")
@@ -51,7 +49,6 @@ class CustomBot(commands.Bot):
         except Exception as e:
             print(f"Failed to load extension cogs.settings: {e}")
 
-        # 3. スラッシュコマンドの同期
         try:
             synced = await self.tree.sync()
             print(f"Synced {len(synced)} command(s)")
@@ -74,11 +71,7 @@ async def on_ready():
 # 画像抽出ユーティリティ関数
 # ---------------------------------------------------------
 def extract_image_urls(message: discord.Message) -> list[str]:
-    """
-    メッセージの添付ファイルおよび埋め込み(Embed)から画像URLをすべて抽出します。
-    """
     urls = []
-    # 添付ファイルのチェック
     if message.attachments:
         for att in message.attachments:
             if att.content_type and att.content_type.startswith("image/"):
@@ -86,7 +79,6 @@ def extract_image_urls(message: discord.Message) -> list[str]:
             elif att.url.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
                 urls.append(att.url)
 
-    # 埋め込み(Embed)画像のチェック
     if message.embeds:
         for embed in message.embeds:
             if embed.image and embed.image.url:
@@ -97,15 +89,13 @@ def extract_image_urls(message: discord.Message) -> list[str]:
     return urls
 
 # ---------------------------------------------------------
-# 1. 転送メッセージ処理（通常チャンネル & フォーラム・スレッド対応）
+# 1. 転送メッセージ処理
 # ---------------------------------------------------------
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
 
-    # フォーラム内のスレッド投稿か、通常のテキストチャンネルかを判定
-    # スレッドの場合は親チャンネル(フォーラム)のIDを取得
     if isinstance(message.channel, discord.Thread):
         target_channel_id = message.channel.parent_id
         is_thread = True
@@ -113,10 +103,8 @@ async def on_message(message: discord.Message):
         target_channel_id = message.channel.id
         is_thread = False
 
-    # メッセージ（またはスレッドのスターターメッセージ）から画像URLを抽出
     image_urls = extract_image_urls(message)
 
-    # 画像が含まれていない場合は処理を行わない
     if not image_urls:
         await bot.process_commands(message)
         return
@@ -124,7 +112,6 @@ async def on_message(message: discord.Message):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     
-    # 該当チャンネル（またはフォーラム親チャンネル）が転送元(src)か取得
     c.execute('SELECT group_name FROM group_channels WHERE guild_id = ? AND channel_id = ? AND type = "src"',
               (message.guild.id, target_channel_id))
     src_rows = c.fetchall()
@@ -134,11 +121,9 @@ async def on_message(message: discord.Message):
         await bot.process_commands(message)
         return
 
-    # 転送先(dest)へメッセージを構築して送信
     for row in src_rows:
         group_name = row[0]
         
-        # 二重転送チェック
         if is_message_forwarded(message.id):
             continue
 
@@ -160,17 +145,14 @@ async def on_message(message: discord.Message):
                 if message.content:
                     embed.add_field(name="💬 メッセージ", value=message.content, inline=False)
                 
-                # 最初のアタッチメント画像をメインに設定
                 embed.set_image(url=image_urls[0])
                 await dest_ch.send(embed=embed)
                 
-                # 複数画像がある場合は追加で送信
                 for extra_url in image_urls[1:]:
                     img_embed = discord.Embed(color=discord.Color.blue())
                     img_embed.set_image(url=extra_url)
                     await dest_ch.send(embed=img_embed)
                 
-                # 転送済みとして記録
                 record_forwarded_message(message.id, message.guild.id, group_name)
 
     conn.close()
@@ -184,7 +166,6 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if payload.user_id == bot.user.id or not payload.guild_id:
         return
 
-    # すでに昇格済みメッセージであれば処理をスキップ
     if is_message_promoted(payload.message_id):
         return
 
@@ -202,7 +183,6 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
 
-    # 該当チャンネルが属する転送元グループを取得
     c.execute('SELECT group_name FROM group_channels WHERE guild_id = ? AND channel_id = ? AND type = "src"',
               (payload.guild_id, target_channel_id))
     src_rows = c.fetchall()
@@ -216,7 +196,6 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     for row in src_rows:
         group_name = row[0]
         
-        # グループに設定されている昇格ルール（絵文字・閾値）を取得
         c.execute('SELECT threshold FROM promotion_rules WHERE guild_id = ? AND group_name = ? AND emoji = ?',
                   (payload.guild_id, group_name, emoji_str))
         rule = c.fetchone()
@@ -226,12 +205,10 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 
         threshold = rule[0]
 
-        # 付与されたリアクションの件数を判定
         reaction = discord.utils.get(message.reactions, emoji=payload.emoji.name if payload.emoji.is_custom_emoji() else payload.emoji.name)
         count = reaction.count if reaction else 0
 
         if count >= threshold:
-            # 転送先(dest)チャンネルを取得
             c.execute('SELECT channel_id FROM group_channels WHERE guild_id = ? AND group_name = ? AND type = "dest"',
                       (payload.guild_id, group_name))
             dest_rows = c.fetchall()
@@ -255,21 +232,17 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
                     if image_urls:
                         embed.set_image(url=image_urls[0])
 
-                    # 転送先へ昇格メッセージを送信
                     promoted_msg = await dest_ch.send(embed=embed)
 
-                    # 複数画像がある場合追加送信
                     if len(image_urls) > 1:
                         for extra_url in image_urls[1:]:
                             img_embed = discord.Embed(color=discord.Color.gold())
                             img_embed.set_image(url=extra_url)
                             await dest_ch.send(embed=img_embed)
 
-                    # 感想・コメント用スレッドの自動作成
                     thread_name = f"💬 感想・コメント: {message.author.display_name}の作品"
                     thread = await promoted_msg.create_thread(name=thread_name[:100], auto_archive_duration=10080)
 
-                    # 昇格履歴と作成されたスレッドIDをDBに記録（重複昇格を防止）
                     record_promoted_message(
                         original_message_id=message.id,
                         promoted_message_id=promoted_msg.id,
@@ -282,23 +255,25 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     conn.close()
 
 # ---------------------------------------------------------
-# 3. ダッシュボード起動用UIクラス
+# 3. ダッシュボード起動用UIクラス（メインコマンド）
 # ---------------------------------------------------------
 class DashboardGroupSelect(discord.ui.Select):
-    """
-    設定したいグループを選択して一画面ダッシュボードを開くドロップダウンです。
-    """
     def __init__(self, guild_id: int, groups: list):
         self.guild_id = guild_id
-        options = [discord.SelectOption(label=f"⚙️ {g}", value=g) for g in groups]
-        super().__init__(placeholder="設定するグループを選択してください...", min_values=1, max_values=1, options=options)
+        options = [discord.SelectOption(label="➕ 新しいグループを作成...", value="__CREATE_NEW__")]
+        for g in groups:
+            options.append(discord.SelectOption(label=f"⚙️ {g}", value=g))
+            
+        super().__init__(placeholder="グループを選択または新規作成...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
-        group_name = self.values[0]
-        # ui_dashboard.py から Embed と View を作成して表示
-        embed = create_dashboard_embed(self.guild_id, group_name)
-        view = RuleDashboardView(self.guild_id, group_name)
-        await interaction.response.edit_message(content=None, embed=embed, view=view)
+        val = self.values[0]
+        if val == "__CREATE_NEW__":
+            await interaction.response.send_modal(CreateGroupModal())
+        else:
+            embed = create_dashboard_embed(self.guild_id, val)
+            view = RuleDashboardView(self.guild_id, val)
+            await interaction.response.edit_message(content=None, embed=embed, view=view)
 
 # ---------------------------------------------------------
 # 4. スラッシュコマンド群
@@ -312,12 +287,9 @@ async def setup_command(interaction: discord.Interaction):
     guild_id = interaction.guild_id
     existing_groups = get_all_group_names(guild_id)
     
-    if not existing_groups:
-        await interaction.response.send_message("⚠️ 設定可能なグループが存在しません。先にグループを作成してください。", ephemeral=True)
-    else:
-        view = discord.ui.View()
-        view.add_item(DashboardGroupSelect(guild_id, existing_groups))
-        await interaction.response.send_message("📁 **ダッシュボードを開くグループを選択してください:**", view=view, ephemeral=True)
+    view = discord.ui.View()
+    view.add_item(DashboardGroupSelect(guild_id, existing_groups))
+    await interaction.response.send_message("📁 **管理するグループを選択するか、新規作成してください:**", view=view, ephemeral=True)
 
 @bot.tree.command(name="config", description="従来の転送設定メニューを開きます")
 async def config_command(interaction: discord.Interaction):
@@ -341,7 +313,7 @@ async def list_command(interaction: discord.Interaction):
     await interaction.response.send_message(text, ephemeral=True)
 
 # ---------------------------------------------------------
-# 5. チャンネル全削除機能 (/clear_channel) - 連打防止対応
+# 5. チャンネル全削除機能 (/clear_channel)
 # ---------------------------------------------------------
 class ClearConfirmView(discord.ui.View):
     def __init__(self, locale):
@@ -350,7 +322,6 @@ class ClearConfirmView(discord.ui.View):
 
     @discord.ui.button(label="🗑️ 実行する", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # ボタン連打防止：直ちにUI（ボタン）を無効化してメッセージを編集更新
         await interaction.response.edit_message(
             content="⏳ メッセージ削除処理を実行中です...", 
             view=None
@@ -359,23 +330,20 @@ class ClearConfirmView(discord.ui.View):
         channel = interaction.channel
         now = datetime.now(timezone.utc)
         fourteen_days_ago = now - timedelta(days=14)
-        
         deleted_count = 0
         
-        # 14日以内のメッセージは一括削除(purge)
         try:
             purged = await channel.purge(limit=1000, after=fourteen_days_ago)
             deleted_count += len(purged)
         except Exception as e:
             print(f"Purge error: {e}")
 
-        # 14日以上経過した古いメッセージは個別に削除
         try:
             async for msg in channel.history(limit=1000, before=fourteen_days_ago):
                 try:
                     await msg.delete()
                     deleted_count += 1
-                    await asyncio.sleep(0.8) # レートリミット回避のウェイト
+                    await asyncio.sleep(0.8)
                 except Exception:
                     pass
         except Exception as e:
@@ -401,7 +369,6 @@ async def clean_old_messages():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     
-    # 転送先(dest)チャンネルとその保持日数（グループ設定）を取得
     c.execute('''
         SELECT gc.channel_id, COALESCE(gs.retention_days, ?) 
         FROM group_channels gc
@@ -416,7 +383,7 @@ async def clean_old_messages():
 
     for ch_id, retention_days in dest_channels:
         if retention_days <= 0:
-            continue # 0以下の場合は削除無制限
+            continue
         
         channel = bot.get_channel(ch_id)
         if not channel:
@@ -440,7 +407,7 @@ async def clean_old_messages():
 # Bot起動
 # ---------------------------------------------------------
 if __name__ == "__main__":
-    keep_alive() # Webサーバーの起動（Renderポート対策）
+    keep_alive()
     if DISCORD_BOT_TOKEN:
         bot.run(DISCORD_BOT_TOKEN)
     else:
