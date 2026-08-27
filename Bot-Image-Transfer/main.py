@@ -13,11 +13,15 @@ from database import (
     is_message_forwarded,
     record_forwarded_message,
     is_message_promoted,
-    record_promoted_message
+    record_promoted_message,
+    get_all_group_names
 )
 from ui_language import send_language_menu
 from ui_group import send_group_management_menu
 from keep_alive import keep_alive
+
+# 【新規追加】作成した ui_dashboard からダッシュボード画面とビューを読み込み
+from ui_dashboard import create_dashboard_embed, RuleDashboardView
 
 # 権限(Intents)の設定：スレッド・メッセージコンテンツ・リアクション読み取りを確実に許可
 intents = discord.Intents.default()
@@ -278,9 +282,44 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     conn.close()
 
 # ---------------------------------------------------------
-# 3. スラッシュコマンド群
+# 3. ダッシュボード起動用UIクラス
 # ---------------------------------------------------------
-@bot.tree.command(name="config", description="転送設定メニューを開きます")
+class DashboardGroupSelect(discord.ui.Select):
+    """
+    設定したいグループを選択して一画面ダッシュボードを開くドロップダウンです。
+    """
+    def __init__(self, guild_id: int, groups: list):
+        self.guild_id = guild_id
+        options = [discord.SelectOption(label=f"⚙️ {g}", value=g) for g in groups]
+        super().__init__(placeholder="設定するグループを選択してください...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        group_name = self.values[0]
+        # ui_dashboard.py から Embed と View を作成して表示
+        embed = create_dashboard_embed(self.guild_id, group_name)
+        view = RuleDashboardView(self.guild_id, group_name)
+        await interaction.response.edit_message(content=None, embed=embed, view=view)
+
+# ---------------------------------------------------------
+# 4. スラッシュコマンド群
+# ---------------------------------------------------------
+@bot.tree.command(name="setup", description="一画面設定ダッシュボードを開きます（管理者専用）")
+async def setup_command(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ このコマンドは管理者専用です。", ephemeral=True)
+        return
+    
+    guild_id = interaction.guild_id
+    existing_groups = get_all_group_names(guild_id)
+    
+    if not existing_groups:
+        await interaction.response.send_message("⚠️ 設定可能なグループが存在しません。先にグループを作成してください。", ephemeral=True)
+    else:
+        view = discord.ui.View()
+        view.add_item(DashboardGroupSelect(guild_id, existing_groups))
+        await interaction.response.send_message("📁 **ダッシュボードを開くグループを選択してください:**", view=view, ephemeral=True)
+
+@bot.tree.command(name="config", description="従来の転送設定メニューを開きます")
 async def config_command(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("❌ このコマンドは管理者専用です。", ephemeral=True)
@@ -298,12 +337,11 @@ async def language_command(interaction: discord.Interaction):
 
 @bot.tree.command(name="list", description="現在の設定一覧を表示します")
 async def list_command(interaction: discord.Interaction):
-    # 修正箇所: メンション記法 <#channel_id> 変更に伴い bot 引数を削除
     text = build_group_map_text(interaction.guild_id, interaction.locale)
     await interaction.response.send_message(text, ephemeral=True)
 
 # ---------------------------------------------------------
-# 4. チャンネル全削除機能 (/clear_channel) - 連打防止対応
+# 5. チャンネル全削除機能 (/clear_channel) - 連打防止対応
 # ---------------------------------------------------------
 class ClearConfirmView(discord.ui.View):
     def __init__(self, locale):
@@ -356,7 +394,7 @@ async def clear_channel_command(interaction: discord.Interaction):
     await interaction.response.send_message(warn_text, view=view, ephemeral=True)
 
 # ---------------------------------------------------------
-# 5. 動的自動削除バックグラウンドタスク
+# 6. 動的自動削除バックグラウンドタスク
 # ---------------------------------------------------------
 @tasks.loop(hours=1)
 async def clean_old_messages():
