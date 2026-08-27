@@ -8,7 +8,6 @@ from discord.ext import commands, tasks
 from config import DISCORD_BOT_TOKEN, DB_FILE, DEFAULT_DELETE_AFTER_DAYS
 from database import (
     init_db, 
-    build_group_map_text,
     is_message_forwarded,
     record_forwarded_message,
     is_message_promoted,
@@ -282,7 +281,6 @@ async def setup_command(interaction: discord.Interaction):
     existing_groups = get_all_group_names(guild_id)
     
     if not existing_groups:
-        # グループが一つも無い場合は直接モーダルを開いて新規作成へ誘導
         await interaction.response.send_modal(CreateGroupModal())
     else:
         view = discord.ui.View()
@@ -296,11 +294,6 @@ async def config_command(interaction: discord.Interaction):
         return
     
     await send_group_management_menu(interaction, interaction.guild_id)
-
-@bot.tree.command(name="list", description="現在の設定一覧を表示します")
-async def list_command(interaction: discord.Interaction):
-    text = build_group_map_text(interaction.guild_id)
-    await interaction.response.send_message(text, ephemeral=True)
 
 # ---------------------------------------------------------
 # 5. チャンネル全削除機能 (/clear_channel)
@@ -394,10 +387,10 @@ async def clean_old_messages():
             print(f"Error checking channel {ch_id}: {e}")
 
 # ---------------------------------------------------------
-# Bot起動
+# Bot起動（Webサーバー起動のkeep_aliveを含む）
 # ---------------------------------------------------------
 if __name__ == "__main__":
-    keep_alive()
+    keep_alive()  # Renderのポートバインド用にWebサーバーを起動
     if DISCORD_BOT_TOKEN:
         bot.run(DISCORD_BOT_TOKEN)
     else:
